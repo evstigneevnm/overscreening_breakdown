@@ -777,12 +777,16 @@ class solve_nonlinear_problem(collocation_discretization):
                 else:
                     iterations = 0
                     residual_norm = residual_norm_0
-                    if self.__globalization < 1.0e-11:
+                    if self.__globalization == 0.0:
+                        break
+                    elif self.__globalization < 1.0e-11:
                         self.__globalization = 0.0
                     else:
                         self.__globalization = self.__globalization*0.5
 
                 print("newton: residual norm = ", self.residual_L2_norm(c), " with homotopy = ", self.__globalization)
+                if self.__globalization == 0.0:
+                    break                
 
         elif self.__use_method == "print":
             k = np.arange(0, self._M)
