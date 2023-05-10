@@ -478,6 +478,17 @@ class collocation_discretization(basic_discretization):
         c = np.linalg.solve(M, b)
         return c
 
+    def L2_error(self, c, function):
+        def func_in_basis(t):
+            return function(self.arg_from_basis_to_domain(t))
+
+        def difference(t):
+            return np.power((func_in_basis(t) - self.solution_in_basis(c, t)),2)
+        
+        ref = integrate.quad( lambda t: np.power(func_in_basis(t),2), self.basis_boundaries()[0], self.basis_boundaries()[1] )
+
+        res = integrate.quad( difference, self.basis_boundaries()[0], self.basis_boundaries()[1] )
+        return np.sqrt(res[0]/ref[0])
 
     
 # class galerkin_discretization(basic_discretization):
@@ -689,7 +700,7 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def set_problem(self, probem):
         self.__problem = probem
-        self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions())
+        self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions() )
         self.__form_matrices()
 
     def residual_L2_norm(self, c):
