@@ -109,6 +109,8 @@ class linear_manufactured_solutions_solver(object):
             k_l = L2_all[0][0]/L2_N[0]
             plt.loglog(N_all,np.multiply(L2_N,k_l),'*')
             legend.append("L = %.01f"%L)
+        
+        plt.xlabel("N (DOF)")
         plt.legend(legend)
         plt.title(title)
         plt.grid()
@@ -119,7 +121,7 @@ class linear_manufactured_solutions_solver(object):
 
     def __figures_coefficients(self):
         file_path_name = self.__default_folder+"/"+self._file_name_prefix+"N_coeffs.pdf"
-        title = "$|\hat{u}}(N)$ decay for "+self._problem_name
+        title = "|$\hat{u}}(N)$| decay for "+self._problem_name
         legend = []
         N_all = self._N_all
         L_all = self._L_all
@@ -130,6 +132,7 @@ class linear_manufactured_solutions_solver(object):
             plt.semilogy( np.abs(c_c_), '.')
             legend.append("N = %i"%N)
 
+        plt.xlabel("N (DOF)")
         plt.legend(legend)
         plt.title(title)
         plt.grid()
@@ -139,7 +142,7 @@ class linear_manufactured_solutions_solver(object):
         plt.clf()
 
         file_path_name = self.__default_folder+"/"+self._file_name_prefix+"L_coeffs.pdf"
-        title = "$|\hat{u}}(L)$ decay for "+self._problem_name
+        title = "|$\hat{u}}(L)$| decay for "+self._problem_name
         legend = []
         c_c_L = []
         for c_c_ in c_c_all:
@@ -149,6 +152,7 @@ class linear_manufactured_solutions_solver(object):
             plt.semilogy( c_c_, '.')
             legend.append("L = %0.1f"%L)
 
+        plt.xlabel("N (DOF)")
         plt.legend(legend)
         plt.title(title)
         plt.grid()
@@ -178,7 +182,8 @@ class linear_manufactured_solutions_solver(object):
                     
             plt.plot(t, self._problem.solution_in_domain( col.arg_from_basis_to_domain(t) ) ,linewidth = 1.0)
             legend.append("L = %0.1f"%L)
-
+        
+        plt.xlabel("t")
         plt.legend(legend)
         plt.title(title)    
         plt.grid()

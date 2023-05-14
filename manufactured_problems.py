@@ -133,11 +133,12 @@ class problem_5(basic_problem):
         self._operator = [None, None, 1, None, -1]
 
     def get_name(self):
-        return "$-u_{xx}+u_{xxxx}=f(x)$, $u=1/(x+1)$"        
+        return "$u_{xx}-u_{xxxx}=f(x)$, $u=1/(x+1)$"        
 
     def solution_in_domain(self, x):
         # return 1/(x**2+1)
         return 1/(x+1)
+        
     def rhs_in_domain(self, x):     
         # return (384*x**4)/(1 + x**2)**5 - (288*x**2)/(1 + x**2)**4 + 24/(1 + x**2)**3 - (8*x**2)/(1 + x**2)**3 + 2/(1 + x**2)**2 
         return -24/(1+x)**5+2/(1+x)**3
