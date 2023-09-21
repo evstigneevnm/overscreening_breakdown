@@ -698,8 +698,8 @@ class solve_nonlinear_problem(collocation_discretization):
     def set_method(self, method_name):
         self.__use_method = method_name
 
-    def set_problem(self, probem):
-        self.__problem = probem
+    def set_problem(self, problem):
+        self.__problem = problem
         self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions() )
         self.__form_matrices()
 
@@ -825,15 +825,15 @@ class solve_nonlinear_problem(collocation_discretization):
     def obtain_solution_in_basis(self, c, t):
         return self.solution_in_basis(c, t)        
     
-    def obtain_rhs_in_domain(self, c, x):
+    def obtain_rhs_in_domain(self, c, x, problem):
         t = self.arg_from_domain_to_basis(x)
         u = self.solution_in_basis(c, t)
-        return self.__problem.right_hand_side(x, u, 0)
+        return problem.right_hand_side(x, u, 0)
     
-    def obtain_rhs_in_basis(self, c, t):
+    def obtain_rhs_in_basis(self, c, t, problem):
         x = self.arg_from_basis_to_domain(t)
         u = self.solution_in_basis(c, t)  
-        return self.__problem.right_hand_side(x, u, 0) 
+        return problem.right_hand_side(x, u, 0) 
     
     def __save_data(self, file_name, data):
         with open(file_name, 'wb') as handle:
