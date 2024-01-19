@@ -20,7 +20,7 @@ class overscreening_breakdown(object):
         self.__delta = delta
         self.__u0 = u0
         self.__u0xxx = u0xxx
-        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [None,None,None,None,None] ]
+        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [0,None,None,None,None] ]
         if type(initial_guess_solution) != type(None):
             self.__initial_guess_solution = initial_guess_solution
 
@@ -49,7 +49,7 @@ class overscreening_breakdown(object):
 
     def right_hand_side(self, x, u, q):
         num = (np.sinh(u) - self.__g_func(x)*0.5*self.__mu*np.exp(u) )*np.exp(-q*x)
-        din = (1 + 2.0*self.__gamma*np.sinh(u/2.0)**2)
+        din = (1.0 + 2.0*self.__gamma*np.sinh(u/2.0)**2)
         res = num/din
         if self.__delta>self.__delta_inverse_check:
             res = res/(self.__delta**2)
@@ -58,7 +58,7 @@ class overscreening_breakdown(object):
     def right_hand_side_linearization(self, x, u, q):
 
         num = np.exp(-q*x)*(2*(self.__gamma + np.cosh(u) - self.__gamma*np.cosh(u)) + (np.exp(u)*(-1 + self.__gamma) - self.__gamma)*self.__mu*self.__g_func(x))
-        din = 2*(1 - self.__gamma + self.__gamma*np.cosh(u))**2
+        din = 2.0*(1.0 - self.__gamma + self.__gamma*np.cosh(u))**2
         res = num/din
         if self.__delta>self.__delta_inverse_check:
             res = res/(self.__delta**2)

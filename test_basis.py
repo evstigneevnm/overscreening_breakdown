@@ -12,7 +12,7 @@ def main():
     def func(x):
         return np.exp(-x)
 
-    b_c,y_c = col.rhs_expand(func );
+    b_c = col.function_expand(func );
     # print(b_c)
 
 

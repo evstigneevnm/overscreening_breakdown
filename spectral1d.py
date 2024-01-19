@@ -794,6 +794,7 @@ class solve_nonlinear_problem(collocation_discretization):
                         self.__globalization = 0.0
                     else:
                         self.__globalization = self.__globalization*0.5
+                        
 
                 print("newton: residual norm = ", self.residual_L2_norm(c), " with homotopy = ", self.__globalization)
                 if self.__globalization == 0.0:
