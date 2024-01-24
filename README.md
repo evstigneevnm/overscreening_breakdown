@@ -25,7 +25,22 @@ Other tests are:
 
 ## Description
 #### Problem formulation
-Physical problem ...
+Overscreening breakdown problem describes the electric double layer (EDL) near electrodes with heterogeneous surface structure. We investigate the interplay between short-range ion correlations, which provides charge density oscillations and overscreening regime, with the impact of electrode surface morphology.
+
+We solve the Modified Poisson-Fermi equation in dimensionless form:
+$$(1-\delta_c^2 \nabla^2) \nabla^2 u = \frac{\sinh(u)}{1 +2\gamma \sinh^2\left(u/2\right)} - \frac{0.5 \mu g(x)e^{u}}{1 +2\gamma \sinh^2\left(u/2\right)}$$
+with boundary condition: $$u(x = 0) = V, \quad u'''(x = 0) = 0$$ where $u$ is electrostatic potential, $\delta_c$ is correlation length describing electrostatic correlations, $\gamma$ is the compacity parameter, $\mu$ is the magnitude of ion separation caused by electrode surface geometry and ion size asymmetry, $g(x) = \frac{1}{\sqrt{2\pi}} \exp\{-\frac {x^2}{2\sigma^2}\}$ has the form of the Gauss distribution function describing the area of electrode surface structure impact with roughness deviation $\sigma$, and $V$ is the potential on the electrode. 
+
+The main parameters, treated as the input of physical problem, are:
+- $\delta_c$ to control the scale of electrostatic correlations
+- $\sigma$ to control the scale, where surface roughness acts on the EDL
+- $\mu$ to control the magnitude of electrode surface roughness contribution
+- $V$ to control the initial structure of EDL
+- $\gamma$ to control the EDL density
+
+As the output you obtain the solution on electrostatic potential $u$ and then using classical electrostatic definition you can also calculate: charge density of EDL, ion concentrations, cumulative charge or differential capacitance.
+
+For more details we refer to our article [ref to arxiv]
 
 #### Numerical method
 The problem is solved on the $R^+$ domain by using an analytical mapping to the domain [0, pi].
@@ -39,3 +54,7 @@ For the tests on the stability of parameters, see:
 test_different_mu.ipynb
 ```
 
+## Contacts
+The numerical method is implemented by Evstigneev Nikolay and Ryabkov Oleg.
+Physical formulation by: Alexey Khlyupin, Irina Nesterova, Kirill Gerke.
+If you have any questions, please contact irina.nesterova@phystech.edu
