@@ -40,7 +40,7 @@ The main parameters, treated as the input of physical problem, are:
 
 As the output you obtain the solution on electrostatic potential $u$ and then using classical electrostatic definition you can also calculate: charge density of EDL, ion concentrations, cumulative charge or differential capacitance.
 
-For more details we refer to our article [ref to arxiv]
+For more details we refer to our article: https://arxiv.org/abs/2401.13458
 
 #### Numerical method
 The problem is solved on the $R^+$ domain by using an analytical mapping to the domain [0, pi].
