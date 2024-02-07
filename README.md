@@ -57,7 +57,7 @@ test_different_mu.ipynb
 ## Contacts
 The numerical method is implemented by Evstigneev Nikolay and Ryabkov Oleg.
 Physical formulation by: Alexey Khlyupin, Irina Nesterova, Kirill Gerke.
-If you have any questions, please contact irina.nesterova@phystech.edu
+If you have any questions, please contact khlyupin@phystech.edu or irina.nesterova@phystech.edu
 
 ## Funding
 Partially, Evstigneev Nikolay and Ryabkov Oleg appreciate the support of the work by the Russian Science Foundation (RSF), project number 23-21-00095.
