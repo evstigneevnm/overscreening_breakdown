@@ -2,38 +2,81 @@ import numpy as np
 from scipy import optimize, integrate
 from matplotlib import pyplot as plt
 import pickle
+import mpmath #for custom pecision arithmetic
 
 class basis_functions(object):
-    def __init__(self, N, L = 1):
+    def __init__(self, N, L = 1, use_mpmath = False, prec = 100):
         self.__N = N
         self.__M = N+2 #for boundary conditions
         self.__L = L
+        self.__use_mpmath = use_mpmath
+        if self.__use_mpmath:
+            self.__mp = mpmath
+            self.__mp.mp.dps = prec
+        else:
+            self.__mp = np
         self._domain = (0,np.pi)
+        self.__cos = np.vectorize(self.__mp.cos)
+        self.__sin = np.vectorize(self.__mp.sin)
+        if self.__use_mpmath:
+            self.__atan = np.vectorize(self.__mp.atan)
+        else:
+            self.__atan = np.vectorize(self.__mp.arctan)
+        self.__sqrt = np.vectorize(self.__mp.sqrt)
+        self.__tan = np.vectorize(self.__mp.tan)
+
 
     #axilary functions
+
+    def __convert(self, val):
+        if self.__use_mpmath:
+            return self.__mp.mpf(1)*val
+        else:
+            return val
+
     def __get_length(self, var):
         try:
             size_var = len(var)
         except:
             size_var = 1
         return size_var
+    def use_mpmath(self, prec = 100):
+        self.__use_mpmath = True
+        self.__mp = mpmath
+        self.__mp.mp.dps = prec
+
+    def use_numpy(self):
+        self.__use_mpmath = False
+        self.__mp = np
+
+    def get_mpmath_ref(self):
+        return self.__mp
+
+    def is_using_mpmath(self):
+        return self.__use_mpmath
+    def __check(self, val):
+        try:
+            len(val)
+            return(val) 
+        except:
+            return([val])
 
     # mapping x \in [0, Pi]
     def psi(self, k, x):
-        return(np.cos(k*x))
-    def dpsi(self, k, x):
-        return(-k*np.sin(k*x))
+        return(self.__cos( self.__check(k*x) ) ) 
+    def dpsi(self, k, x):        
+        return(-k*self.__sin(self.__check(k*x) ))
     def ddpsi(self, k, x):
-        return(-k*k*np.cos(k*x))
-    def dddpsi(self, k, x):
-        return(k*k*k*np.sin(k*x))
-    def ddddpsi(self, k, x):
-        return(k*k*k*k*np.cos(k*x))
+        return(-k*k*self.__cos(self.__check(k*x) ))
+    def dddpsi(self, k, x):      
+        return(k*k*k*self.__sin(self.__check(k*x) ))
+    def ddddpsi(self, k, x):  
+        return(k*k*k*k*self.__cos(self.__check(k*x) ))
 
     def circlemap_in_t(self, j):
         if (np.max(j)>self.__N) or (np.min(j)<0):
             raise ValueError("logical_error: __circlemap_in_t j: "+str(np.max(j)) + " " + str(np.min(j)) );
-        return np.pi*(2.0*(j+1) - 1.0)/(2.0*self.__N)
+        return self.__mp.pi*(2*(j+1) - 1)/(2.0*self.__N)
     
     def circlemap_with_bound_in_t(self, j): 
     #it is assumed that j runs through 0,...,self._M-1 while Chebyshev zeroes are located at k(=j-1) in 0,...,self.N_-1
@@ -45,58 +88,72 @@ class basis_functions(object):
             if j==0:
                 value = 0;
             elif j==self.__M-1:
-                value = np.pi
+                value = self.__mp.pi
             else:
-                value = np.pi*(2.0*(k+1) - 1.0)/(2.0*self.__N)
+                value = self.__mp.pi*(2*(k+1) - 1)/(2*self.__N)
         else:
-            value = np.pi*(2.0*(k+1) - 1.0)/(2.0*self.__N)
+            value = self.__mp.pi*(2*(k+1) - 1)/(2*self.__N)
             value[0] = 0;
-            value[-1:] = np.pi
+            value[-1:] = self.__mp.pi
 
         return value
 
-    def from_infinity_map_to_t(self, x_in):
-        x = np.copy(x_in)
-        zero_at = np.argmin(x)
-        if x[zero_at]==0:
-            x[zero_at] = 1
-            y = 1/x
-            val = 2*np.arctan(np.sqrt(self.__L*y))
-            val[zero_at] = np.pi
-        else:
-            y = 1/x
-            val = 2*np.arctan(np.sqrt(self.__L*y))
+    # def from_infinity_map_to_t_old(self, x_in):
+    #     x = x_in.copy()
+    #     zero_at = np.argmin(x)
+    #     if x[zero_at]==0:
+    #         x[zero_at] = 1
+    #         print(x)
+    #         y = 1/x
+    #         val = 2*self.__atan(self.__sqrt(self.__L*y))
+    #         val[zero_at] = self.__mp.pi
+    #     else:
+    #         y = 1/x
+    #         val = 2*self.__atan(self.__sqrt(self.__L*y))
+    #     return val
+
+    def from_infinity_map_to_t(self, x_in): #not good, but have to do it due to mpmath
+        x = x_in.copy()
+        xind = (np.float128(x) == 0)
+        for jl, xl in enumerate(x):
+            if xl == 0:
+                x[jl] = 1
+        y = 1/x
+        val = 2*self.__atan(self.__sqrt(self.__L*y))
+        for jl, fl in enumerate(xind):
+            if fl:
+                val[jl] = self.__mp.pi
         return val
 
     def from_t_map_to_infinity(self, t):
-        ss = np.sin(t/2)**2;
-        cs = np.cos(t/2)**2;
+        ss = self.__sin(t/2)**2;
+        cs = self.__cos(t/2)**2;
         inf_at = np.argmin(ss)
         if self.__get_length(t)>1:
             if ss[inf_at]==0:
                 ss[inf_at] = 1
-                cs[inf_at] = np.inf
+                cs[inf_at] = self.__mp.inf
         else:
             if ss == 0:
                 ss = 1
-                cs = np.inf
+                cs = self.__mp.inf
 
         return self.__L*cs/ss;
 
     def map_derivative1_inf(self, l, t):
-        return -np.sin(t/2)**2*np.tan(t/2)*self.dpsi(l, t)/self.__L
+        return -self.__sin(t/2)**2*self.__tan(t/2)*self.dpsi(l, t)/self.__L
 
     def map_derivative2_inf(self, l, t):
-        return 1/(2*self.__L**2)*np.sin(t/2)**2*np.tan(t/2)**3*((2 + np.cos(t))*self.dpsi(l, t) + np.sin(t)*self.ddpsi(l, t))
+        return 1/(2*self.__L**2)*self.__sin(t/2)**2*self.__tan(t/2)**3*((2 + self.__cos(t))*self.dpsi(l, t) + self.__sin(t)*self.ddpsi(l, t))
     def map_derivative3_inf(self, l, t):
-        common =  -1/(4*self.__L**3)*np.sin(t/2)**2*np.tan(t/2)**5
-        return common*((8 + 6*np.cos(t) + np.cos(2*t))*self.dpsi(l, t) + np.sin(t)*(3*(2 + np.cos(t))*self.ddpsi(l, t)+np.sin(t)*self.dddpsi(l, t)));
+        common =  -1/(4*self.__L**3)*self.__sin(t/2)**2*self.__tan(t/2)**5
+        return common*((8 + 6*self.__cos(t) + self.__cos(2*t))*self.dpsi(l, t) + self.__sin(t)*(3*(2 + self.__cos(t))*self.ddpsi(l, t)+self.__sin(t)*self.dddpsi(l, t)));
     def map_derivative4_inf(self, l, t):
-        common = 1/(16*self.__L**4)*np.sin(t/2)**2*np.tan(t/2)**7;
-        p1 = 3*(32 + 29*np.cos(t) + 8*np.cos(2*t) + np.cos(3*t))*self.dpsi(l, t);
-        p2 = (91 + 72*np.cos(t) + 11*np.cos(2*t))*self.ddpsi(l, t);
-        p3 = (6*(2 + np.cos(t))*self.dddpsi(l, t) + np.sin(t)*self.ddddpsi(l, t));
-        return common*(p1+np.sin(t)*(p2 + 2*np.sin(t)*p3));
+        common = 1/(16*self.__L**4)*self.__sin(t/2)**2*self.__tan(t/2)**7;
+        p1 = 3*(32 + 29*self.__cos(t) + 8*self.__cos(2*t) + self.__cos(3*t))*self.dpsi(l, t);
+        p2 = (91 + 72*self.__cos(t) + 11*self.__cos(2*t))*self.ddpsi(l, t);
+        p3 = (6*(2 + self.__cos(t))*self.dddpsi(l, t) + self.__sin(t)*self.ddddpsi(l, t));
+        return common*(p1+self.__sin(t)*(p2 + 2*self.__sin(t)*p3));
 
     #Assuming[{k > 0, k \[Element] Integers}, Limit[MapDerivative1[k, t], t -> Pi]]
     def map_value_derivative1_inf_at_0(self, k):
@@ -118,6 +175,7 @@ class basis_functions(object):
         self.__L = 1;
         point_1 = 0.5513288954217920495113264983129694413973864803666406527993660202910303034692697948403800288231708892;
         k = np.arange(0,10)
+        k = self.__convert(k)
         ref_psi = [1.000000000000000000000000, 0.8518291728351008482475919, 0.4512258793858642257917624, -0.08309443763699743507355421, -0.5927904115449070198720477, -0.9268178942247568910640156, -0.9861906288675822882369444, -0.7533140010672442067997559, -0.2971990559608395323392074, 0.2469883490542546328224461]
         res_psi = self.psi(k,point_1)
         if np.linalg.norm(ref_psi - res_psi)/np.linalg.norm(ref_psi)>1.0e-12:
@@ -136,8 +194,9 @@ class basis_functions(object):
             raise ValueError("test_basis_functions: res_dddpsi(k,point_1)" )
         ref_ddddpsi = [0, 0.8518291728351008482475919, 7.219614070173827612668199,-6.730649448596792240957891, -151.7543453554961970872442,-579.2611838904730569150098, -1278.103055012386645555080,-1808.706916562453340526214, -1217.327333215598724461394,1620.490558144964645948069]
         res_ddddpsi = self.ddddpsi(k, point_1)
-        if np.linalg.norm(res_ddddpsi - ref_ddddpsi)/np.linalg.norm(ref_ddddpsi)>1.0e-12:
-            raise ValueError("test_basis_functions: ref_ddddpsi(k,point_1)" )
+        errdddd = np.linalg.norm(res_ddddpsi - ref_ddddpsi)/np.linalg.norm(ref_ddddpsi)
+        if errdddd>1.0e-12:
+            raise ValueError("test_basis_functions: ref_ddddpsi(k,point_1): " + str(errdddd) )
         
         ref_map_dpsi = [0, 0.01097729701136520820034867, 0.03740312733262579974626982,0.06265133401749413623782799, 0.06750903608978212255593176,0.03934652589897829732072724, -0.02082390946956544989825558,-0.09647476794209319156219345, -0.1600748371466477000020034,-0.1827629489121505488706909]
         res_map_dpsi = self.map_derivative1_inf(k, point_1)
@@ -161,7 +220,7 @@ class basis_functions(object):
     def test_mappings(self):
         j = np.arange(0, self.__N)
         t = self.circlemap_in_t(j)
-        t = np.append(t,np.pi)
+        t = np.append(t,self.__mp.pi)
         t = np.append(t, 0)
         x = self.from_t_map_to_infinity(t)
         t1 = self.from_infinity_map_to_t(x)
@@ -174,7 +233,7 @@ class basis_functions(object):
         self.test_mappings()
 
 class basic_discretization(object):
-    def __init__(self, N, domain):
+    def __init__(self, N, domain, L = 1, use_mpmath = False, prec = 100):
         self._N = N
         self._M = self._N+2 # due to additional boundary constraints        
         self._additional_boundaries = 0
@@ -193,7 +252,7 @@ class basic_discretization(object):
         if self._domain_type=="R" or self._domain_type=="R-":
             raise ValueError("basic_discretization: only segment and R+ domains are implemented")
 
-        self._basis = basis_functions(N)
+        self._basis = basis_functions(N, L, use_mpmath, prec)
         self._basis.test()
         #Dirichlet, 1st derivative, ..., 4th derivative
         self._boundary_conditions_left = [None, None, None, None, None]
@@ -225,7 +284,11 @@ class basic_discretization(object):
         # self._additional_boundaries = max(self._additional_boundaries, 0)
         # print(self._boundaries, self._additional_boundaries)
         #set number of BCs!
+    def is_using_mpmath(self):
+        return self._basis.is_using_mpmath()
 
+    def get_mpmath_ref(self):
+        return self._basis.get_mpmath_ref()
 
     def psi(self,k,x):
         return self._basis.psi(k,x);
@@ -361,29 +424,38 @@ class basic_discretization(object):
 
 
 class collocation_discretization(basic_discretization):
-    def __init__(self, N, domain):
-        super().__init__(N, domain)
-    
+    def __init__(self, N, domain, L = 1, use_mpmath = False, prec = 100):
+        super().__init__(N, domain, L, use_mpmath, prec)
+        
 
     def mass_matrix(self):
-        M = np.zeros((self._N+self._additional_boundaries, self._N+self._additional_boundaries))
+        if( super().is_using_mpmath() ):
+            M = super().get_mpmath_ref().zeros(self._N+self._additional_boundaries, self._N+self._additional_boundaries)
+        else:
+            M = np.zeros((self._N+self._additional_boundaries, self._N+self._additional_boundaries))
+
         is_there_boundaries = 0 if self._additional_boundaries==0 else 1
 
         for j in range(0, self._N+self._additional_boundaries):
             for k in range(0, self._N+self._additional_boundaries):
                 if j>=is_there_boundaries and j<self._N+is_there_boundaries:
-                    M[j,k] = self.psi(k, self.discrete_points_in_basis(j-is_there_boundaries) ) 
+                    ppp = self.psi(k, self.discrete_points_in_basis(j-is_there_boundaries) ) 
+                    M[j,k] = ppp[0]
 
         return(M)
 
     def bilinear_form(self, operator, alpha):
-        S = np.zeros( (self._N+self._additional_boundaries, self._N+self._additional_boundaries) )
+        if( super().is_using_mpmath() ):
+            S = super().get_mpmath_ref().zeros(self._N+self._additional_boundaries, self._N+self._additional_boundaries)
+        else:        
+            S = np.zeros( (self._N+self._additional_boundaries, self._N+self._additional_boundaries) )
         is_there_boundaries = 0 if self._additional_boundaries==0 else 1
 
         for j in range(0, self._N+self._additional_boundaries):
             for k in range(0, self._N+self._additional_boundaries):
                  if j>=is_there_boundaries and j<self._N+is_there_boundaries:
-                    S[j,k] = alpha*operator(k, self.discrete_points_in_basis(j-is_there_boundaries) )#operator_in_basis_funcs(k, self.discrete_points_in_basis_with_bounds(j) )
+                    ppp = alpha*operator(k, self.discrete_points_in_basis(j-is_there_boundaries) )
+                    S[j,k] = ppp[0]#operator_in_basis_funcs(k, self.discrete_points_in_basis_with_bounds(j) )
         return(S)
 
     def set_boundary_bilinear_form_tau_method(self, S):
@@ -398,12 +470,21 @@ class collocation_discretization(basic_discretization):
                 if b_value[1] == 0:
                     position = 0 if index == 0 else 1 #chech if Dirichlet is at positon 0 in basis or in position 1
                     for k in range(self._N+self._additional_boundaries):
-                        S[matrix_boundary_rows[matrix_boundary_row_index],k] = self.psi(k, self.basis_boundaries()[position] )
+                        ppp = self.psi(k, self.basis_boundaries()[position] )
+                        if hasattr(ppp, "__len__"):
+                            S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp[0]
+                        else:
+                            S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp
+
                     matrix_boundary_row_index = matrix_boundary_row_index + 1
                 else:
                     der_id_val = b_value[1]
                     for k in range(self._N+self._additional_boundaries):
-                        S[matrix_boundary_rows[matrix_boundary_row_index],k] = self.psi_with_derivative_value_at_left(k, der_id_val)
+                        ppp = self.psi_with_derivative_value_at_left(k, der_id_val)
+                        if hasattr(ppp, "__len__"):
+                            S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp[0]
+                        else:
+                            S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp
                     matrix_boundary_row_index = matrix_boundary_row_index + 1
 
         return(S)
@@ -435,14 +516,22 @@ class collocation_discretization(basic_discretization):
 
 
     def linear_functional_linearization(self, operator, **kwargs):
-        N = np.zeros( (self._N+self._additional_boundaries, self._N+self._additional_boundaries) )
+        if( super().is_using_mpmath() ):
+            N = super().get_mpmath_ref().zeros(self._N+self._additional_boundaries, self._N+self._additional_boundaries)
+        else:
+            N = np.zeros( (self._N+self._additional_boundaries, self._N+self._additional_boundaries) )
+
         is_there_boundaries = 0 if self._additional_boundaries==0 else 1
         x = self.all_discrete_points_in_domain()
         t = self.all_discrete_points_in_basis()
         for j in range(0, self._N+self._additional_boundaries):
             for k in range(0, self._N+self._additional_boundaries):
                 if j>=is_there_boundaries and j<self._N+is_there_boundaries:
-                    N[j, k] = self.psi(k, t[j-is_there_boundaries])*operator(x[j-is_there_boundaries], t[j-is_there_boundaries], **kwargs)
+                    ppp = self.psi(k, t[j-is_there_boundaries])*operator(x[j-is_there_boundaries], t[j-is_there_boundaries], **kwargs)
+                    if hasattr(ppp, "__len__"):
+                        N[j, k] = ppp[0]
+                    else:
+                        N[j, k] = ppp
         return N
 
     def linear_functional_linearization_boundary(self, N):
@@ -459,11 +548,15 @@ class collocation_discretization(basic_discretization):
         return N
 
     def solve(self, matrix, rhs):
-        sol = np.linalg.solve(matrix, rhs)
+        if( super().is_using_mpmath() ):
+            sol = super().get_mpmath_ref().lu_solve(matrix, rhs)
+        else:
+            sol = np.linalg.solve(matrix, rhs)
+
         return sol
 
     def function_values(self, f):
-        def func_wrapper(x,t):
+        def func_wrapper(x, t):
             return f(x)
 
         vals = self.linear_functional(func_wrapper)
@@ -475,7 +568,11 @@ class collocation_discretization(basic_discretization):
         M = self.mass_matrix()
         M = self.set_boundary_bilinear_form_tau_method(M)
         b = self.function_values(f)
-        c = np.linalg.solve(M, b)
+        if( super().is_using_mpmath() ):
+            c = super().get_mpmath_ref().lu_solve(M, b)
+        else:
+            c = np.linalg.solve(M, b)
+        
         return c
 
     def L2_error(self, c, function):
@@ -612,8 +709,8 @@ class collocation_discretization(basic_discretization):
     
 
 class solve_nonlinear_problem(collocation_discretization):
-    def __init__(self, N, domain, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0):
-        super().__init__(N, domain)
+    def __init__(self, N, domain, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100):  #log_10(2^53) \sim 16
+        super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
         self._N = N
         self.__use_method = use_method # "root", "nonlin_solve", "newton"
         self.__visualize = visualize #can be used only in "newton" method
@@ -623,9 +720,19 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__S = None
         self.__use_globalization = use_globalization
         self.__globalization_init = globalization_init
-        self.__globalization = 0.0
+        self.__globalization = 0
         self.__base_solution = None
         self.__converged = False
+        self.__use_mpmath = super().is_using_mpmath()
+        self.__mp_ref = super().get_mpmath_ref()
+        if self.__use_mpmath:
+            self.__dot = self.__mp_ref.fdot
+            self.__sqrt = self.__mp_ref.sqrt
+            self.__norm = self.__mp_ref.norm
+        else:
+            self.__dot = np.dot    
+            self.__sqrt = np.sqrt
+            self.__norm = np.linalg.norm
 
 
     def __form_matrices(self):
@@ -675,7 +782,10 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def __residual_operator(self, c):
         rhs = self.__right_hand_side(c, self.__globalization)
-        lhs = np.dot(self.__S, c)
+        if self.__use_mpmath:
+            lhs = self.__S*c#self.__dot(self.__S, c)
+        else:
+            lhs = self.__dot(self.__S, c)
         res = rhs-lhs
         return res
         
@@ -700,15 +810,20 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def set_problem(self, problem):
         self.__problem = problem
+        if self.__use_mpmath:
+            self.__problem.set_use_mp_math(self.__mp_ref)
         self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions() )
         self.__form_matrices()
 
     def residual_L2_norm(self, c):
-        return np.linalg.norm(self.__residual_operator(c))/np.sqrt(self._M)
+        relnorm = self.__norm(self.__residual_operator(c))/self.__sqrt(self._M)
+        return relnorm
 
     def solve_problem(self, c0 = None):
         if self.__problem==None:
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
+        if self.__use_mpmath:
+            print("Warning! Using mpmath with", self.__mp_ref.mp.dps, "significant digits and backend", self.__mp_ref.libmp.BACKEND ,". Solution will be slow!" )
         converged = False
         c_ref = self.__base_solution_expand()
         if np.any(c0) != None:
@@ -722,47 +837,53 @@ class solve_nonlinear_problem(collocation_discretization):
 
 
         if self.__use_method == "root":
-            res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*np.sqrt(self._M), jac=self.__linearization_operator )
+            if self.__use_mpmath:
+                raise ValueError("only 'newton' can be used to solve with mpmath library")            
+            res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*self.__sqrt(self._M), jac=self.__linearization_operator )
             converged = res.success
             c = res.x;
         elif self.__use_method == "root_no_jac":
-            res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*np.sqrt(self._M))
+            if self.__use_mpmath:
+                raise ValueError("only 'newton' can be used to solve with mpmath library")            
+            res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*self.__sqrt(self._M))
             converged = res.success
             c = res.x;
         elif self.__use_method == "nonlin_solve":
+            if self.__use_mpmath:
+                raise ValueError("only 'newton' can be used to solve with mpmath library")                        
             try:
                 c = optimize.nonlin.nonlin_solve(self.__residual_operator, c, jac=self.__linearization_operator)
             except:
                 converged = False
 
         elif self.__use_method == "newton":
-            residual_norm_0 = np.sqrt(self._M)#self.residual_L2_norm(c_ref)
+            residual_norm_0 = self.__sqrt(self._M)#self.residual_L2_norm(c_ref)
             residual_norm = residual_norm_0
             iterations = 0
-            print("newton: relative target tolerance = ", self.__tolerance*residual_norm_0)
+            print("newton: relative target tolerance = {:.6e}".format(self.__tolerance*np.float64(residual_norm_0)))
             for j_homotopy in range(0,100):
-                c_save = np.copy(c)
+                c_save = c.copy()
                 while residual_norm>self.__tolerance*residual_norm_0 and iterations<self.__total_iterations: 
                     iterations = iterations + 1
                     A = -self.__linearization_operator(c)
                     b = self.__residual_operator(c)
-                    dc = np.linalg.solve(A, b)
+                    dc = self.solve(A, b)# np.linalg.solve(A, b)
                     w = 1
                     converged = True
-                    residual_norm_new = residual_norm*1.1
+                    residual_norm_new = residual_norm*(1+1/10)
                     while residual_norm_new>=residual_norm:
                         c_new = c + w*dc
                         residual_norm_new = self.residual_L2_norm(c_new)
-                        w = w*0.5
-                        if w<1.0e-10 or not np.isfinite(residual_norm_new):
+                        w = w/2
+                        if w<1.0e-10 or not self.__mp_ref.isfinite(residual_norm_new):
                             converged = False
                             break
                     c = c_new
                     if not converged:
-                        print("newton: failed to converge with norm: ", residual_norm_new, " with wight: ", w)
+                        print("newton: failed to converge for old norm: {:.6e}".format(np.float64(residual_norm)), "with new norm: {:.6e}".format(np.float64(residual_norm_new)), " with weight: {:.6e}".format(np.float64(w)) )
                         break
                     residual_norm = residual_norm_new
-                    print("newton: iteration ", iterations, ", residual norm ", residual_norm, ", wight = ", w*2)
+                    print("newton: iteration ", iterations, ", residual norm {:.6e}".format(np.float64(residual_norm)), ", weight = {:.6e}".format(np.float64(w*2)) )
                     if self.__visualize:
                         t = np.arange(0, np.pi, 0.01)
                         u = self.obtain_solution_in_basis(c, t)
@@ -775,12 +896,12 @@ class solve_nonlinear_problem(collocation_discretization):
                 if iterations>=self.__total_iterations:
                     converged = False
 
-                if not converged or not np.isfinite(residual_norm):
+                if not converged or not self.__mp_ref.isfinite(residual_norm):
                     iterations = 0
                     residual_norm = residual_norm_0
                     if self.__globalization == 0:
                         self.__globalization = self.__globalization_init
-                    c = 0*np.copy(c_save) #reset data
+                    c = 0*c_save.copy() #reset data
 
                     self.__globalization = self.__globalization*1.25
                     if not self.__use_globalization:
@@ -796,7 +917,7 @@ class solve_nonlinear_problem(collocation_discretization):
                         self.__globalization = self.__globalization*0.5
                         
 
-                print("newton: residual norm = ", self.residual_L2_norm(c), " with homotopy = ", self.__globalization)
+                print("newton: residual norm = {:.6e}".format(np.float64(self.residual_L2_norm(c))), " with homotopy = {:.6e}".format(np.float64(self.__globalization)))
                 if self.__globalization == 0.0:
                     break                
 
@@ -809,9 +930,9 @@ class solve_nonlinear_problem(collocation_discretization):
             print(self.dddpsi(10, j[self._M-1] ))
 
         if converged:
-            print("converged with norm = ", self.residual_L2_norm(c) )
+            print("converged with norm = {:.6e}".format(np.float64(self.residual_L2_norm(c) ) ))
         else:
-            print("failed to converge with norm = ", self.residual_L2_norm(c) )
+            print("failed to converge with norm = {:.6e}".format(np.float64(self.residual_L2_norm(c) ) ))
             
         self.__current_solution = c
         self.__converged = converged
@@ -837,13 +958,24 @@ class solve_nonlinear_problem(collocation_discretization):
         return problem.right_hand_side(x, u, 0) 
     
     def __save_data(self, file_name, data):
+        if self.__use_mpmath:
+            print("Warning! Writing data to file is performed in float128 binary format, some data may be lost")
+        
+        data_1 = np.float128(data)
         with open(file_name, 'wb') as handle:
-            pickle.dump(data, handle)
+            pickle.dump(data_1, handle)
 
     def __load_data(self, file_name):
         with open(file_name, 'rb') as handle:
             data = pickle.load(handle)
-        return data
+        if self.__use_mpmath:
+            print("Warning! Reading data from file is performed in float128 binary format, some data may be lost")
+            # sizes = np.shape(data)
+            # data_1 = self.__mp_ref.zeros(sizes[0],sizes[1])
+            data_1 = self.__mp_ref.matrix(data.tolist())
+        else:
+            data_1 = data
+        return data_1
 
     def save_solution(self, file_name, c):
         self.__save_data(file_name, c)
