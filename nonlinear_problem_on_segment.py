@@ -1,21 +1,23 @@
 import numpy as np
 import mpmath as mp
 
-class overscreening_breakdown(object):
+class nonlinear_problem_on_segment(object):
     def __init__(self):
-        self.__domain = [0, np.inf]
+        self.__domain = [-5, 5]
         self.__sigma = 10.0
         self.__mu = 0.0
         self.__gamma = 1/2
         self.__delta = 50.0
-        self.__u0 = 100.0
+        self.__u0 = 10.0
+        self.__u1 = -5.0
         self.__u0xxx = 0
+        self.__u1xxx = 0
         self.__use_mpmath = np
         self.__use_mp_math = False        
         self.__set_functions()
         self.__delta_inverse_check = 0.0
-        self.__boundaries = [[self.__u0,None,None,self.__u0xxx,None],[None,None,None,None,None]]
-        self.__initial_guess_solution = lambda x: self.__u0*self.__exp(-x)
+        self.__boundaries = [[self.__u0,None,None,self.__u0xxx,None],[self.__u1,None,None,self.__u1xxx,None]]
+        self.__initial_guess_solution = lambda x: (x - self.__domain[0])/(self.__domain[1] - self.__domain[0])*(self.__u1 - self.__u0)  + self.__u0
 
 #       define axillary function to be used in function bellow for numpy and mpmath, if one needs high precision arithemtic        
 
@@ -35,14 +37,14 @@ class overscreening_breakdown(object):
         self.__use_mpmath = mp_ref
         self.__set_functions()
 
-    def set_parameters(self, sigma = 10.0, mu = 1.0, gamma = 1.0, delta = 10.0, u0 = 1.0, u0xxx = 0.0, u0x = None, u0xx = None, u0xxxx = None, initial_guess_solution = None ):
+    def set_parameters(self, sigma = 10.0, mu = 1.0, gamma = 1.0, delta = 10.0, u0 = 1.0, u0x = None, u0xx = None, u0xxx = 0, u0xxxx = None, u1 = -1.0, u1x = None, u1xx = None, u1xxx = 0, u1xxxx = None, initial_guess_solution = None ):
         self.__sigma = sigma
         self.__mu = mu
         self.__gamma = gamma
         self.__delta = delta
         self.__u0 = u0
         self.__u0xxx = u0xxx
-        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [0,None,None,None,None] ]
+        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [u1, u1x, u1xx, u1xxx, u1xxxx] ]
         if type(initial_guess_solution) != type(None):
             self.__initial_guess_solution = initial_guess_solution
 

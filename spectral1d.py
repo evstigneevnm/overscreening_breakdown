@@ -3,9 +3,11 @@ from scipy import optimize, integrate
 from matplotlib import pyplot as plt
 import pickle
 import mpmath #for custom pecision arithmetic
+from scipy.optimize import minimize
+from scipy.integrate import ode
 
 class basis_functions(object):
-    def __init__(self, N, L = 1, use_mpmath = False, prec = 100):
+    def __init__(self, N, L = 1, use_mpmath = False, prec = 100, calc_domain = [0, np.inf]):
         self.__N = N
         self.__M = N+2 #for boundary conditions
         self.__L = L
@@ -16,12 +18,15 @@ class basis_functions(object):
         else:
             self.__mp = np
         self._domain = (0,np.pi)
+        self._calc_domain = calc_domain
         self.__cos = np.vectorize(self.__mp.cos)
         self.__sin = np.vectorize(self.__mp.sin)
         if self.__use_mpmath:
             self.__atan = np.vectorize(self.__mp.atan)
+            self.__acos = np.vectorize(self.__mp.acos)
         else:
             self.__atan = np.vectorize(self.__mp.arctan)
+            self.__acos = np.vectorize(self.__mp.arccos)
         self.__sqrt = np.vectorize(self.__mp.sqrt)
         self.__tan = np.vectorize(self.__mp.tan)
 
@@ -61,17 +66,17 @@ class basis_functions(object):
         except:
             return([val])
 
-    # mapping x \in [0, Pi]
-    def psi(self, k, x):
-        return(self.__cos( self.__check(k*x) ) ) 
-    def dpsi(self, k, x):        
-        return(-k*self.__sin(self.__check(k*x) ))
-    def ddpsi(self, k, x):
-        return(-k*k*self.__cos(self.__check(k*x) ))
-    def dddpsi(self, k, x):      
-        return(k*k*k*self.__sin(self.__check(k*x) ))
-    def ddddpsi(self, k, x):  
-        return(k*k*k*k*self.__cos(self.__check(k*x) ))
+    # t \in [0, Pi]
+    def psi(self, k, t):
+        return(self.__cos( self.__check(k*t) ) ) 
+    def dpsi(self, k, t):        
+        return(-k*self.__sin(self.__check(k*t) ))
+    def ddpsi(self, k, t):
+        return(-k*k*self.__cos(self.__check(k*t) ))
+    def dddpsi(self, k, t):      
+        return(k*k*k*self.__sin(self.__check(k*t) ))
+    def ddddpsi(self, k, t):  
+        return(k*k*k*k*self.__cos(self.__check(k*t) ))
 
     def circlemap_in_t(self, j):
         if (np.max(j)>self.__N) or (np.min(j)<0):
@@ -125,6 +130,21 @@ class basis_functions(object):
                 val[jl] = self.__mp.pi
         return val
 
+    def from_segment_map_to_t(self, x_in): #not good, but have to do it due to mpmath
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        idx0 = x_in < x0
+        idx1 = x_in > x1
+        for jl, fl in enumerate(idx0):
+            if fl:
+                x_in[jl] = x0
+        for jl, fl in enumerate(idx1):
+            if fl:
+                x_in[jl] = x1
+
+        t = self.__acos((2*x_in-(x1 + x0))/(x1 - x0))
+        return t    
+
     def from_t_map_to_infinity(self, t):
         ss = self.__sin(t/2)**2;
         cs = self.__cos(t/2)**2;
@@ -137,12 +157,16 @@ class basis_functions(object):
             if ss == 0:
                 ss = 1
                 cs = self.__mp.inf
-
         return self.__L*cs/ss;
+
+    def from_t_map_to_segment(self, t):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        x = (self.__cos(t)*(x1-x0)+(x1+x0))/2
+        return x
 
     def map_derivative1_inf(self, l, t):
         return -self.__sin(t/2)**2*self.__tan(t/2)*self.dpsi(l, t)/self.__L
-
     def map_derivative2_inf(self, l, t):
         return 1/(2*self.__L**2)*self.__sin(t/2)**2*self.__tan(t/2)**3*((2 + self.__cos(t))*self.dpsi(l, t) + self.__sin(t)*self.ddpsi(l, t))
     def map_derivative3_inf(self, l, t):
@@ -154,16 +178,82 @@ class basis_functions(object):
         p2 = (91 + 72*self.__cos(t) + 11*self.__cos(2*t))*self.ddpsi(l, t);
         p3 = (6*(2 + self.__cos(t))*self.dddpsi(l, t) + self.__sin(t)*self.ddddpsi(l, t));
         return common*(p1+self.__sin(t)*(p2 + 2*self.__sin(t)*p3));
+    
+
+    def map_derivative1_segment(self, l, t):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        return (2*1/self.__sin(t)*self.dpsi(l, t))/(x0-x1)
+    def map_derivative2_segment(self, l, t):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        return -((4*(1/(self.__sin(t))**2)*(self.__cos(t)/self.__sin(t)*self.dpsi(l, t)-self.ddpsi(l, t)))/(x0-x1)**2)
+    def map_derivative3_segment(self, l, t):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        #(self.__mp.pi**3)*self.dddpsi(l, t)/((x1-x0)**3)
+        p0 = 8*(1/self.__sin(t)**3)
+        p1 = (-2+3/self.__sin(t)**2)*self.dpsi(l, t)
+        p2 = -3*(self.__cos(t)/self.__sin(t))*self.ddpsi(l, t)+self.dddpsi(l, t)
+        return p0*(p1+p2)/(x0-x1)**3
+    def map_derivative4_segment(self, l, t):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        #(self.__mp.pi**4)*self.ddddpsi(l, t)/((x1-x0)**4)    
+        p0 = -(1/(x0-x1)**4)*16*(1/self.__sin(t)**4)
+        p1 = (6*(self.__cos(t)/self.__sin(t))**3+9*(self.__cos(t)/self.__sin(t))*1/self.__sin(t)**2)*self.dpsi(l, t)
+        p2 = (11-15/self.__sin(t)**2)*self.ddpsi(l, t)
+        p3 = 6*self.__cos(t)/self.__sin(t)*self.dddpsi(l, t) - self.ddddpsi(l, t)
+        return p0*(p1+p2+p3)
+
+
 
     #Assuming[{k > 0, k \[Element] Integers}, Limit[MapDerivative1[k, t], t -> Pi]]
-    def map_value_derivative1_inf_at_0(self, k):
+    def map_value_derivative1_inf_at_pi(self, k):
         return -(2/self.__L)*((-1)**k)*(k**2)
-    def map_value_derivative2_inf_at_0(self, k):
+    def map_value_derivative2_inf_at_pi(self, k):
         return (4/(3*self.__L**2))*((-1)**k)*(k**2)*(2 + k**2)      
-    def map_value_derivative3_inf_at_0(self, k):
+    def map_value_derivative3_inf_at_pi(self, k):
         return -(4/(15*self.__L**3))*((-1)**k)*(k**2)*(23 + 20*k**2 + 2*k**4)
-    def map_value_derivative4_inf_at_0(self, k):
+    def map_value_derivative4_inf_at_pi(self, k):
         return 16/(105*self.__L**4)*((-1)**k)*(k**2)*(132+154*k**2+28*k**4+k**6)
+
+
+    # 0->x1, pi->x0
+    def map_derivative1_segment_at_0(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]        
+        return -((2*n**2)/(x0-x1))
+    def map_derivative2_segment_at_0(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        return ((4*n**2)*(n**2-1))/(3*(x0-x1)**2)
+    def map_derivative3_segment_at_0(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]        
+        return -(( (8*n**2)*(4-5*n**2+n**4))/(15*(x0-x1)**3))
+    def map_derivative4_segment_at_0(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        return ((16*n**2)*(-36+49*n**2-14*n**4+n**6))/(105*(x0-x1)**4)
+
+
+    def map_derivative1_segment_at_pi(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1] 
+        return (2*((-1)**n)*n**2)/(x0-x1)
+    def map_derivative2_segment_at_pi(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        return ((4*((-1)**n)*n**2)*(n**2-1))/(3*(x0-x1)**2)
+    def map_derivative3_segment_at_pi(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]        
+        return ((8*((-1)**n)*n**2)*(4-5*n**2+n**4))/(15*(x0-x1)**3)
+    def map_derivative4_segment_at_pi(self, n):
+        x0 = self._calc_domain[0]
+        x1 = self._calc_domain[1]
+        return ((16*((-1)**n)*n**2)*(-36+49*n**2-14*n**4+n**6))/(105*(x0-x1)**4)
 
 
     def set_mapping_parameter(self, value):
@@ -216,7 +306,38 @@ class basis_functions(object):
             raise ValueError("test_basis_functions: map_derivative4_inf(k,point_1)" )
         self.__L = L_save
         return(self)
-    
+
+
+
+    def test_basis_functions_segment(self):
+        calc_domain_back = self._calc_domain.copy()
+        self._calc_domain = [-4, 7]
+        point_1 = 0.5513288954217920495113264983129694413973864803666406527993660202910303034692697948403800288231708892;
+        k = np.arange(0,10)
+        k = self.__convert(k)
+        ref_map_dpsi = [0,0.1818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818,0.619512125698255162361885049417263711454192437720704873280726486776741765366305344054658804917952625,1.037700959330033700863740839830479350835234083574345601260019310441272684577101696944947207146834973,1.118159614833604964616782158753638277215719958890586544799333433264753649588120545130535730340148069,0.651700850619922192581299533634451134989323933862139639383142580958796778233186737888431559411409945,-0.34490871060360758812358807101490200844245777514501424278268129806437711994275857366266420418380965,-1.59792222806777293680749360272444743553543677938009773517782953386117465867533726912105814863775125,-2.65133719300042962818831651285264959811814640174953019075440607209737852554140339834291466349719579,-3.02712289195897510251197573984911823111227928590241381145194753216153001870123981514156798004734770]
+        res_map_dpsi = self.map_derivative1_segment(k, point_1)
+        if np.linalg.norm(ref_map_dpsi - res_map_dpsi)/np.linalg.norm(ref_map_dpsi)>1.0e-12:
+            raise ValueError("test_basis_functions: map_derivative1_segment(k,point_1)" )        
+
+        ref_map_ddpsi = [0,0,0.132231404958677685950413223140495867768595041322314049586776859504132231404958677685950413223140496,0.675831409852641995303874599364287685222755386604405316306247076483718289490514920786900514455948318,1.77384602348831348224808584967077988220662147693458533736994544328647927674024709638273312775076823,3.15940316460338204905212219667436725212711344838416621469101803643908257264441070760944460956018308,4.08266180022139137082223684789042684510482079837381903743632015974891188580095989087613218488741040,3.54521498527191555344929234912436358603352085464143280984787285594175566002969862133007720637092265,0.79504803985560661765633440744338870827909649418056530515534702358422290128514719281600708684308901,-4.1189699882362159287269586840981260221877185536542825960411807458481243908245908165030759970204155]
+        res_map_ddpsi = self.map_derivative2_segment(k, point_1)
+        if np.linalg.norm(ref_map_ddpsi - res_map_ddpsi)/np.linalg.norm(ref_map_ddpsi)>1.0e-12:
+            raise ValueError("test_basis_functions: map_derivative2_segment(k,point_1)" )  
+
+        ref_map_dddpsi = [0,0,0,0.14425244177310293012772351615326821938392186326070623591284748309541697971450037565740045078888054,0.98302750524020653862381759907532754214218965324277136917272302033995387562256715750821893011774301,3.46559532444907485126999831420231954540948457864890797628494964143747546935491958921578825631619767,8.3677845260858706422312657368116107723997138217932469767213057009224746082943831892283893614897412,15.2440634911558828265982368890588793329310040786963741711822899046460595482266035107686218476469941,21.4703987192085515572517502404742357043880427334691035370040377276059826099334523628405013247623391,22.2014856060785099673067756193839351746298924717460194785220019545868060571206602617626928415780630]
+        res_map_dddpsi = self.map_derivative3_segment(k, point_1)
+        if np.linalg.norm(ref_map_dddpsi - res_map_dddpsi)/np.linalg.norm(ref_map_dddpsi)>1.0e-12:
+            raise ValueError("test_basis_functions: map_derivative3_segment(k,point_1)" )          
+
+        ref_map_ddddpsi = [0,0,0,0,0.2098217334881497165494160234956628645584318011064817976914145208660610614029096373198552011474626,1.7873227368003755247705774528642318948039811877141297621322236733453706829501221045603980547595327,7.8760314899392969775950294480485551231856140550755219175224664535263107979696435597233208155019888,23.802066988830014642176575764075842982470299754637137607730254926849817959061328155329548378637233,54.847741839645267223260970820114813375198285150853784388014798630338769446679341020048903432006029,100.869417001749694051986000795363842243770733046016762525848217469023890852601317958615995108119422]
+        res_map_ddddpsi = self.map_derivative4_segment(k, point_1)
+        if np.linalg.norm(ref_map_ddddpsi - res_map_ddddpsi)/np.linalg.norm(ref_map_ddddpsi)>1.0e-12:
+            raise ValueError("test_basis_functions: map_derivative4_segment(k,point_1)" )      
+
+        self._calc_domain = calc_domain_back
+        return(self)
+
     def test_mappings(self):
         j = np.arange(0, self.__N)
         t = self.circlemap_in_t(j)
@@ -228,9 +349,26 @@ class basis_functions(object):
         if rel_norm_mapping>1.0e-12:
             raise ValueError("test_mappings: error in t<->infinity mappings, error = " + str(rel_norm_mapping) )
     
+    def test_mappings_segment(self):
+        calc_domain_back = self._calc_domain.copy()
+        self._calc_domain = [-4, 7]        
+        j = np.arange(0, self.__N)
+        t = self.circlemap_in_t(j)
+        t = np.append(t,self.__mp.pi)
+        t = np.append(t, 0)
+        x = self.from_t_map_to_segment(t)
+        t1 = self.from_segment_map_to_t(x)
+        rel_norm_mapping = np.linalg.norm(t-t1)/np.linalg.norm(t1)
+        if rel_norm_mapping>1.0e-12:
+            raise ValueError("test_mappings: error in t<->segment mappings, error = " + str(rel_norm_mapping) )        
+        self._calc_domain = calc_domain_back
+        
+
     def test(self):
         self.test_basis_functions()
         self.test_mappings()
+        self.test_basis_functions_segment()
+        self.test_mappings_segment()
 
 class basic_discretization(object):
     def __init__(self, N, domain, L = 1, use_mpmath = False, prec = 100):
@@ -252,7 +390,7 @@ class basic_discretization(object):
         if self._domain_type=="R" or self._domain_type=="R-":
             raise ValueError("basic_discretization: only segment and R+ domains are implemented")
 
-        self._basis = basis_functions(N, L, use_mpmath, prec)
+        self._basis = basis_functions(N = N, L = L, use_mpmath = use_mpmath, prec = prec, calc_domain = self._domain)
         self._basis.test()
         #Dirichlet, 1st derivative, ..., 4th derivative
         self._boundary_conditions_left = [None, None, None, None, None]
@@ -264,25 +402,31 @@ class basic_discretization(object):
         self._boundary_conditions_right = values[1]
         self._boundaries = []
         if self._domain_type == "R+":
-            for el in [self._boundary_conditions_right, self._boundary_conditions_left]:
+            for idx, el in enumerate([self._boundary_conditions_right, self._boundary_conditions_left]):
+                
                 der = 0
                 for j in el:
-                    self._boundaries.append([j, der])
+                    side = 'l' if idx == 0 else 'r'
+                    self._boundaries.append([j, der, side])
                     der = der+1
-        else:
-            for el in [self._boundary_conditions_left, self._boundary_conditions_right]:
+        elif self._domain_type == "segment":
+            for idx, el in enumerate([self._boundary_conditions_right, self._boundary_conditions_left]):
                 der = 0
                 for j in el:
-                    self._boundaries.append([j, der])    
+                    side = 'l' if idx == 0 else 'r'
+                    self._boundaries.append([j, der, side])    
                     der = der+1      
-
+        else:
+            raise ValueError("set_boundary_conditions: only segment and R+ domains are implemented")
+        
         self._additional_boundaries = 0
         for bnd in self._boundaries:
             if bnd[0] != None:
                 self._additional_boundaries = self._additional_boundaries + 1 
 
         # self._additional_boundaries = max(self._additional_boundaries, 0)
-        # print(self._boundaries, self._additional_boundaries)
+        # print(self._boundaries)
+        # print(self._additional_boundaries)
         #set number of BCs!
     def is_using_mpmath(self):
         return self._basis.is_using_mpmath()
@@ -294,22 +438,22 @@ class basic_discretization(object):
         return self._basis.psi(k,x);
     def dpsi(self,k,x):
         if self._domain_type == "segment":
-            return self._basis.dpsi(k, x);
+            return self._basis.map_derivative1_segment(k, x);
         elif self._domain_type == "R+":
             return self._basis.map_derivative1_inf(k, x);
     def ddpsi(self,k,x):
         if self._domain_type == "segment":
-            return self._basis.ddpsi(k, x);
+            return self._basis.map_derivative2_segment(k, x);
         elif self._domain_type == "R+":
             return self._basis.map_derivative2_inf(k, x);        
     def dddpsi(self,k,x):
         if self._domain_type == "segment":
-            return self._basis.dddpsi(k, x);
+            return self._basis.map_derivative3_segment(k, x);
         elif self._domain_type == "R+":
-            return self._basis.map_derivative3_inf(k, x);                
+            return self._basis.map_derivative3_inf(k, x);          
     def ddddpsi(self, k, x):
         if self._domain_type == "segment":
-            return self._basis.ddddpsi(k, x);
+            return self._basis.map_derivative4_segment(k, x);
         elif self._domain_type == "R+":
             return self._basis.map_derivative4_inf(k, x);                
 
@@ -328,27 +472,56 @@ class basic_discretization(object):
             raise ValueError("psi_with_derivative: implemented only up to 4-th derivative")
 
     def psi_with_derivative_value_at_left(self, k, der):
-        if der==1:
-            return self._basis.map_value_derivative1_inf_at_0(k)
-        elif der==2:
-            return self._basis.map_value_derivative2_inf_at_0(k)
-        elif der==3:
-            return self._basis.map_value_derivative3_inf_at_0(k)
-        elif der==4:
-            return self._basis.map_value_derivative4_inf_at_0(k)
+        if der>=1 and der<=4:
+            if self._domain_type == "R+":
+                raise ValueError("psi_with_derivative_value_at_right: on R+ domain regularity at inifinity is assumed.")
+                if der==1:
+                    return 0
+                elif der==2:
+                    return 0
+                elif der==3:
+                    return 0
+                elif der==4:
+                    return 0                
+            elif self._domain_type == "segment":
+                if der==1:
+                    return self._basis.map_derivative1_segment_at_0(k)
+                elif der==2:
+                    return self._basis.map_derivative2_segment_at_0(k)
+                elif der==3:
+                    return self._basis.map_derivative3_segment_at_0(k)
+                elif der==4:
+                    return self._basis.map_derivative4_segment_at_0(k)
         else:
-            raise ValueError("psi_with_derivative_value_at_left: only derivatives 1, 2, 3 and 4 are supported.")
+            raise ValueError("psi_with_derivative_value_at_left: only derivatives 1, 2, 3 and 4 are supported.")            
 
     # to be inserted at need
     def psi_with_derivative_value_at_right(self, k, der):
-        if der==1:
-            return self._basis.map_value_derivative1_inf_at_0(k) #to be corrected at need
-        elif der==2:
-            return self._basis.map_value_derivative2_inf_at_0(k)
-        elif der==3:
-            return self._basis.map_value_derivative3_inf_at_0(k)
-        elif der==4:
-            return self._basis.map_value_derivative4_inf_at_0(k)
+        if der>=1 and der<=4:
+            if self._domain_type == "R+":     
+                if der==1:
+                    return self._basis.map_value_derivative1_inf_at_pi(k)
+                elif der==2:
+                    return self._basis.map_value_derivative2_inf_at_pi(k)
+                elif der==3:
+                    return self._basis.map_value_derivative3_inf_at_pi(k)
+                elif der==4:
+                    return self._basis.map_value_derivative4_inf_at_pi(k)
+                else:
+                    raise ValueError("psi_with_derivative_value_at_right: only derivatives 1, 2, 3 and 4 are supported.")
+            elif self._domain_type == "segment":
+                if der==1:
+                    return self._basis.map_derivative1_segment_at_pi(k)
+                elif der==2:
+                    return self._basis.map_derivative2_segment_at_pi(k)
+                elif der==3:
+                    return self._basis.map_derivative3_segment_at_pi(k)
+                elif der==4:
+                    return self._basis.map_derivative4_segment_at_pi(k)
+        else:
+            raise ValueError("psi_with_derivative_value_at_left: only derivatives 1, 2, 3 and 4 are supported.")        
+
+
 
     def set_mapping_parameter(self, value):
         self._basis.set_mapping_parameter(value)
@@ -357,13 +530,25 @@ class basic_discretization(object):
         return self._basis.circlemap_in_t(j)
     
     def discrete_points_in_domain(self, j):
-        return self._basis.from_t_map_to_infinity(self._basis.circlemap_in_t(j))
+        if self._domain_type == "R+":  
+            pts = self._basis.from_t_map_to_infinity(self._basis.circlemap_in_t(j))
+        elif self._domain_type == "segment":
+            pts = self._basis.from_t_map_to_segment(self._basis.circlemap_in_t(j))
+        else:
+            raise ValueError("discrete_points_in_domain: only semgent and R+ domains are supported")
+        return pts
     
     def discrete_points_in_basis_with_bounds(self, j):
         return self._basis.circlemap_with_bound_in_t(j)
     
     def discrete_points_in_domain_with_bounds(self, j):
-        return self._basis.from_t_map_to_infinity(self._basis.circlemap_with_bound_in_t(j))    
+        if self._domain_type == "R+":  
+            pts = self._basis.from_t_map_to_infinity(self._basis.circlemap_with_bound_in_t(j))
+        elif self._domain_type == "segment":
+            pts = self._basis.from_t_map_to_segment(self._basis.circlemap_with_bound_in_t(j))
+        else:
+            raise ValueError("discrete_points_in_domain_with_bounds: only semgent and R+ domains are supported")
+        return pts
     
     def all_discrete(self):
         return np.arange(0,self._N)
@@ -388,10 +573,23 @@ class basic_discretization(object):
         return self.discrete_points_in_basis_with_bounds(k)      
 
     def arg_from_basis_to_domain(self, t):
-        return self._basis.from_t_map_to_infinity(t)
+        if self._domain_type == "R+":  
+            pts = self._basis.from_t_map_to_infinity(t)
+        elif self._domain_type == "segment":
+            pts = self._basis.from_t_map_to_segment(t)
+        else:
+            raise ValueError("arg_from_basis_to_domain: only semgent and R+ domains are supported")
+        return pts
+
     
     def arg_from_domain_to_basis(self, x):
-        return self._basis.from_infinity_map_to_t(x)        
+        if self._domain_type == "R+":  
+            pts = self._basis.from_infinity_map_to_t(x)
+        elif self._domain_type == "segment":
+            pts = self._basis.from_segment_map_to_t(x)
+        else:
+            raise ValueError("arg_from_domain_to_basis: only semgent and R+ domains are supported")
+        return pts       
     
     def basis_boundaries(self):
         return self._basis._domain
@@ -434,7 +632,7 @@ class collocation_discretization(basic_discretization):
         else:
             M = np.zeros((self._N+self._additional_boundaries, self._N+self._additional_boundaries))
 
-        is_there_boundaries = 0 if self._additional_boundaries==0 else 1
+        is_there_boundaries = 0 if self._additional_boundaries == 0 else 1
 
         for j in range(0, self._N+self._additional_boundaries):
             for k in range(0, self._N+self._additional_boundaries):
@@ -458,7 +656,7 @@ class collocation_discretization(basic_discretization):
                     S[j,k] = ppp[0]#operator_in_basis_funcs(k, self.discrete_points_in_basis_with_bounds(j) )
         return(S)
 
-    def set_boundary_bilinear_form_tau_method(self, S):
+    def set_boundary_bilinear_form_tau_method_old(self, S):
         matrix_boundary_rows = [0]
         for j in range(1,self._additional_boundaries):
             matrix_boundary_rows.append(self._N+j)
@@ -468,7 +666,7 @@ class collocation_discretization(basic_discretization):
         for b_value, index in zip(self._boundaries, range(len(self._boundaries)) ):
             if b_value[0] != None:
                 if b_value[1] == 0:
-                    position = 0 if index == 0 else 1 #chech if Dirichlet is at positon 0 in basis or in position 1
+                    position = 0 if index == 0 else 1 #check if Dirichlet is at positon 0 in basis or in position 1
                     for k in range(self._N+self._additional_boundaries):
                         ppp = self.psi(k, self.basis_boundaries()[position] )
                         if hasattr(ppp, "__len__"):
@@ -487,6 +685,41 @@ class collocation_discretization(basic_discretization):
                             S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp
                     matrix_boundary_row_index = matrix_boundary_row_index + 1
 
+        return(S)
+
+    def set_boundary_bilinear_form_tau_method(self, S):
+        matrix_boundary_rows = [0]
+        for j in range(1,self._additional_boundaries):
+            matrix_boundary_rows.append(self._N+j)
+
+        # print("matrix_boundary_rows = ", matrix_boundary_rows)
+        matrix_boundary_row_index = 0
+        for b in self._boundaries:
+            #if Dirichlet boundary
+            if b[0] != None and b[1] == 0:
+                if b[2] == 'l':
+                    position = 0
+                elif b[2] == 'r':
+                    position = 1
+                for k in range(self._N+self._additional_boundaries):
+                    ppp = self.psi(k, self.basis_boundaries()[position] )   
+                    if hasattr(ppp, "__len__"):
+                        S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp[0]
+                    else:
+                        S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp
+                matrix_boundary_row_index = matrix_boundary_row_index + 1
+            #if Neumann conditons
+            elif b[0] != None and b[1] > 0:
+                for k in range(self._N+self._additional_boundaries):
+                    if b[2] == 'l':
+                        ppp = self.psi_with_derivative_value_at_left(k, b[1])
+                    elif b[2] == 'r':
+                        ppp = self.psi_with_derivative_value_at_right(k, b[1])
+                    if hasattr(ppp, "__len__"):
+                        S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp[0]
+                    else:
+                        S[matrix_boundary_rows[matrix_boundary_row_index],k] = ppp
+                matrix_boundary_row_index = matrix_boundary_row_index + 1
         return(S)
 
     def linear_functional(self, operator, **kwargs):
@@ -540,7 +773,7 @@ class collocation_discretization(basic_discretization):
             matrix_boundary_rows.append(self._N+j)
 
         matrix_boundary_row_index = 0
-        for b_value, index in zip(self._boundaries, range(len(self._boundaries)) ):
+        for b_value in self._boundaries:
             if b_value[0] != None:
                 for k in range(self._N+self._additional_boundaries):
                     N[matrix_boundary_rows[matrix_boundary_row_index],k] = 0
@@ -709,7 +942,7 @@ class collocation_discretization(basic_discretization):
     
 
 class solve_nonlinear_problem(collocation_discretization):
-    def __init__(self, N, domain, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100):  #log_10(2^53) \sim 16
+    def __init__(self, N, domain, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, use_adjoint_opimization = False):  #log_10(2^53) \sim 16
         super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
         self._N = N
         self.__use_method = use_method # "root", "nonlin_solve", "newton"
@@ -718,21 +951,26 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__total_iterations = total_iterations
         self.__problem = None
         self.__S = None
+        self.__iS = None
         self.__use_globalization = use_globalization
         self.__globalization_init = globalization_init
         self.__globalization = 0
         self.__base_solution = None
         self.__converged = False
+        self.__use_adjoint_opimization = use_adjoint_opimization
         self.__use_mpmath = super().is_using_mpmath()
         self.__mp_ref = super().get_mpmath_ref()
         if self.__use_mpmath:
             self.__dot = self.__mp_ref.fdot
             self.__sqrt = self.__mp_ref.sqrt
             self.__norm = self.__mp_ref.norm
+            self.__inv = self.__mp_ref.inverse
         else:
             self.__dot = np.dot    
             self.__sqrt = np.sqrt
             self.__norm = np.linalg.norm
+            self.__inv = np.linalg.inv
+
 
 
     def __form_matrices(self):
@@ -750,6 +988,9 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__S = self.__S + self.bilinear_form(self.ddddpsi, alpha[4])
 
         self.__S = self.set_boundary_bilinear_form_tau_method(self.__S )
+        # print(self.__S)
+        self.__iS = self.__inv(self.__S)
+
         # print("alpha = ", alpha)
         # print("S = ", self.__S )
 
@@ -824,6 +1065,9 @@ class solve_nonlinear_problem(collocation_discretization):
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
         if self.__use_mpmath:
             print("Warning! Using mpmath with", self.__mp_ref.mp.dps, "significant digits and backend", self.__mp_ref.libmp.BACKEND ,". Solution will be slow!" )
+        if not self.__use_mpmath and self.__use_adjoint_opimization:
+            print("Using initial guess update by the adjoint optimization.")
+
         converged = False
         c_ref = self.__base_solution_expand()
         if np.any(c0) != None:
@@ -835,6 +1079,29 @@ class solve_nonlinear_problem(collocation_discretization):
         c = c0;
         self.__globalization = 0
 
+        # def fun(x):
+        #     vec = self.__residual_operator(x);
+        #     # iSvec = np.dot(self.__iS,vec)
+        #     iSvec = vec
+        #     return np.dot(iSvec, iSvec)
+        # def jac(x):
+        #     A = self.__linearization_operator(x)
+        #     AT = A.transpose()
+        #     valT = -2*np.dot(AT, x)
+        #     # iSval = np.dot(self.__iS,valT)
+        #     return valT
+
+        # if not self.__use_mpmath and self.__use_adjoint_opimization:
+        #     res = minimize(fun, c, method = self.__adjoint_method, jac = jac)
+        #     print(res)
+        #     c = res.x
+
+        # c = self.adjoint_descent(c, 1)    
+        
+        if not self.__use_mpmath and self.__use_adjoint_opimization:
+            res = optimize.fsolve(self.__residual_operator, c, fprime=self.__linearization_operator, xtol = 1.0e-1, full_output = True)
+            # print(res)
+            c = res[0]
 
         if self.__use_method == "root":
             if self.__use_mpmath:
@@ -989,3 +1256,35 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def reset_base_solution(self):
         self.__base_solution = None
+
+    def use_adjoint_opimization(self, val):
+        if type(val) != bool:
+            raise ValueError("Only bool argument can be passed.")
+        self.__use_adjoint_opimization = val
+
+
+    #for a tests, but seem to fail in this problem
+    def adjoint_descent(self, c, exec_time):
+        def fun(t, x):
+            print(t)
+            vec = self.__residual_operator(x);
+            A = self.__linearization_operator(x)
+            AT = A.transpose()
+            valT = -2*np.dot(AT, vec)
+            valiST = np.dot(self.__iS, valT)
+            return valiST
+
+        r = ode(fun).set_integrator('vode', rtol = 1.0e-3, atol = 1.0e-5)
+        r.set_initial_value(c, 0)
+
+        residual_norm_b4 = self.residual_L2_norm(c)
+        dt = exec_time/1000;
+        while r.successful() and r.t < exec_time:
+            r.integrate(r.t+dt)
+
+
+        print(r)
+        c = r.y
+        residual_norm_aft = self.residual_L2_norm(c)
+        print("residual_norm_b4 = ", residual_norm_b4 , " residual_norm_aft = ", residual_norm_aft )
+        return c
