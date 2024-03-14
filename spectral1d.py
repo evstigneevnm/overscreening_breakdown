@@ -1049,6 +1049,9 @@ class solve_nonlinear_problem(collocation_discretization):
     def set_method(self, method_name):
         self.__use_method = method_name
 
+    def set_tolerance(self, tolerance):
+        self.__tolerance = tolerance
+
     def set_problem(self, problem):
         self.__problem = problem
         if self.__use_mpmath:

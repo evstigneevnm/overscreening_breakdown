@@ -231,6 +231,8 @@ class nonlinear_manufactured_solutions_solver(linear_manufactured_solutions_solv
         self._visualize = problem.visualize()
         self._use_method = problem.nonlinear_method()
         self._problem = problem
+        if self.__use_mpmath:
+            self._tolerance = 1.0e-30
         
         self._solve_all_problems( self.__solve_one_problem )
         if self._file_name_prefix != None:
