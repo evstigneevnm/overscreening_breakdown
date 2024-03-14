@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 
 class linear_manufactured_solutions_solver(object):
-    def __init__(self, default_folder = "./", show_figures = True):
+    def __init__(self, default_folder = "./", show_figures = True, use_mpmath = False, prec = 100):
         self.__default_folder = default_folder
         self._file_name_prefix = "resutls_"
         self._L_all = [1]
@@ -16,9 +16,15 @@ class linear_manufactured_solutions_solver(object):
         self.__L2_all_L_N = []
         self._problem_name = ""
         self.__show_figures = show_figures
+        self.__use_mpmath = use_mpmath
+        self.__prec = prec
+        if self.__use_mpmath:
+            self._file_name_prefix = self._file_name_prefix + "_mpmath_prec_" + str(self.__prec) + "_"
 
     def solve(self, problem):
         self._file_name_prefix = problem.file_name_prefix()
+        if self.__use_mpmath:
+            self._file_name_prefix = self._file_name_prefix + "_mpmath_prec_" + str(self.__prec) + "_"   
         self._L_all = problem.get_L()
         self._N_all = problem.get_N()
         self._domain = problem.get_domain()
@@ -35,7 +41,8 @@ class linear_manufactured_solutions_solver(object):
             self.save_results()
 
     def __solve_one_problem(self, N, L):
-        col = collocation_discretization(N, self._domain)
+        col = collocation_discretization(N, self._domain, use_mpmath = self.__use_mpmath, prec = self.__prec)
+        self._problem.set_use_mp_math(mp_ref = col.get_mpmath_ref() )
         col.set_boundary_conditions(self._bondaries)
         col.set_mapping_parameter(L)
 
@@ -201,14 +208,18 @@ class linear_manufactured_solutions_solver(object):
         return self.__L2_all_L_N
 
 class nonlinear_manufactured_solutions_solver(linear_manufactured_solutions_solver):
-    def __init__(self, default_folder = "./", show_figures = True):
+    def __init__(self, default_folder = "./", show_figures = True, use_mpmath = False, prec = 100):
         super().__init__(default_folder, show_figures)
         self._tolerance = 1.0e-7
         self._use_method = "newton"
         self._visualize = False
+        self.__use_mpmath = use_mpmath
+        self.__prec = prec
 
     def solve(self, problem):
         self._file_name_prefix = problem.file_name_prefix()
+        if self.__use_mpmath:
+            self._file_name_prefix = self._file_name_prefix + "_mpmath_prec_" + str(self.__prec) + "_"
         self._L_all = problem.get_L()
         self._N_all = problem.get_N()
         self._domain = problem.get_domain()
@@ -226,7 +237,7 @@ class nonlinear_manufactured_solutions_solver(linear_manufactured_solutions_solv
             self.save_results()
 
     def __solve_one_problem(self, N, L):
-        solver = solve_nonlinear_problem(N, self._domain, tolerance = self._tolerance, use_method = self._use_method, visualize = self._visualize)
+        solver = solve_nonlinear_problem(N, self._domain, tolerance = self._tolerance, use_method = self._use_method, visualize = self._visualize, use_mpmath = self.__use_mpmath, prec = self.__prec)
         solver.set_mapping_parameter(L)
         solver.set_problem(self._problem)
         c_c = solver.solve_problem()
