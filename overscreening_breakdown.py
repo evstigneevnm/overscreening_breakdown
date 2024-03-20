@@ -42,7 +42,7 @@ class overscreening_breakdown(object):
         self.__delta = delta
         self.__u0 = u0
         self.__u0xxx = u0xxx
-        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [0,None,None,None,None] ]
+        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [None,None,None,None,None] ]
         if type(initial_guess_solution) != type(None):
             self.__initial_guess_solution = initial_guess_solution
 
@@ -86,3 +86,21 @@ class overscreening_breakdown(object):
         # print("type(num) = ",type(num[0]),"type(din) = ", type(din[0]), "type(res) = ", type(res[0]))
         # print(num[0], din[0], res[0])
         return res
+
+
+
+class overscreening_breakdown_segment(overscreening_breakdown):
+    def __init__(self):
+        super().__init__()
+        self._overscreening_breakdown__domain = [0, 50]
+        self.__boundaries = [[self._overscreening_breakdown__u0,None,None,self._overscreening_breakdown__u0xxx,None],[0,0,None,None,None]]
+    
+    def get_domain(self):
+        return self._overscreening_breakdown__domain
+
+    def get_boundary_conditions(self):
+        return self.__boundaries
+
+    def set_parameters(self, sigma = 10.0, mu = 1.0, gamma = 1.0, delta = 10.0, u0 = 1.0, u0xxx = 0.0, u0x = None, u0xx = None, u0xxxx = None, initial_guess_solution = None ):
+        self.__boundaries = [ [u0, u0x, u0xx, u0xxx, u0xxxx], [0,0,None,None,None] ]
+        super().set_parameters(sigma = sigma, mu = mu, gamma = gamma, delta = delta, u0 = u0, u0xxx = u0xxx, u0x = u0x, u0xx = u0xx, u0xxxx = u0xxxx, initial_guess_solution = initial_guess_solution)

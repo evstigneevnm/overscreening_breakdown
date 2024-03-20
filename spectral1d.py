@@ -17,8 +17,8 @@ class basis_functions(object):
             self.__mp.mp.dps = prec
         else:
             self.__mp = np
-        self._domain = (0,np.pi)
         self._calc_domain = calc_domain
+        self._domain = (0,np.pi)
         self.__cos = np.vectorize(self.__mp.cos)
         self.__sin = np.vectorize(self.__mp.sin)
         if self.__use_mpmath:
@@ -45,6 +45,10 @@ class basis_functions(object):
         except:
             size_var = 1
         return size_var
+    
+    def set_domain(self, domain):
+        self._calc_domain = domain
+
     def use_mpmath(self, prec = 100):
         self.__use_mpmath = True
         self.__mp = mpmath
@@ -375,6 +379,16 @@ class basic_discretization(object):
         self._N = N
         self._M = self._N+2 # due to additional boundary constraints        
         self._additional_boundaries = 0
+        # self._domain = domain
+        self._basis = basis_functions(N = N, L = L, use_mpmath = use_mpmath, prec = prec, calc_domain = domain)
+        self._basis.test()
+        self.set_domain(domain)
+        #Dirichlet, 1st derivative, ..., 4th derivative
+        self._boundary_conditions_left = [None, None, None, None, None]
+        self._boundary_conditions_right = [None, None, None, None, None]
+        self._boundaries = []
+
+    def set_domain(self, domain):
         self._domain = domain
         if len(self._domain) != 2:
             raise ValueError("domain should be provided as a list of format [x_min, x_max]")
@@ -385,17 +399,11 @@ class basic_discretization(object):
             self._domain_type = "R+"
         elif np.min(self._domain) == -np.inf:
             self._domain_type = "R-"
-
         #check for implemented
         if self._domain_type=="R" or self._domain_type=="R-":
-            raise ValueError("basic_discretization: only segment and R+ domains are implemented")
-
-        self._basis = basis_functions(N = N, L = L, use_mpmath = use_mpmath, prec = prec, calc_domain = self._domain)
+            raise ValueError("basic_discretization: only segment and R+ domains are implemented")        
+        self._basis.set_domain(domain)
         self._basis.test()
-        #Dirichlet, 1st derivative, ..., 4th derivative
-        self._boundary_conditions_left = [None, None, None, None, None]
-        self._boundary_conditions_right = [None, None, None, None, None]
-        self._boundaries = []
 
     def set_boundary_conditions(self, values):
         self._boundary_conditions_left = values[0]
@@ -624,7 +632,9 @@ class basic_discretization(object):
 class collocation_discretization(basic_discretization):
     def __init__(self, N, domain, L = 1, use_mpmath = False, prec = 100):
         super().__init__(N, domain, L, use_mpmath, prec)
-        
+    
+    def set_domain(self, domain):
+        super().set_domain(domain)
 
     def mass_matrix(self):
         if( super().is_using_mpmath() ):
@@ -942,8 +952,18 @@ class collocation_discretization(basic_discretization):
     
 
 class solve_nonlinear_problem(collocation_discretization):
-    def __init__(self, N, domain, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, use_adjoint_opimization = False):  #log_10(2^53) \sim 16
-        super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
+    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, use_adjoint_opimization = False):  #log_10(2^53) \sim 16
+        if domain != None and problem == None:
+            super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
+            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec, use_adjoint_opimization = use_adjoint_opimization)
+        elif problem != None and domain == None:
+            super().__init__(N = N, domain = problem.get_domain(), L = L, use_mpmath = use_mpmath, prec = prec)
+            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec, use_adjoint_opimization = use_adjoint_opimization)
+            self.set_problem(problem)
+        else:
+            raise ValueError("solve_nonlinear_problem: either 'problem' or 'domain' must be provided in the constructor.")
+
+    def __common_constructor_operations(self, N, tolerance, use_method, visualize, total_iterations, use_globalization, globalization_init, use_mpmath, prec, use_adjoint_opimization):
         self._N = N
         self.__use_method = use_method # "root", "nonlin_solve", "newton"
         self.__visualize = visualize #can be used only in "newton" method
@@ -970,7 +990,6 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__sqrt = np.sqrt
             self.__norm = np.linalg.norm
             self.__inv = np.linalg.inv
-
 
 
     def __form_matrices(self):
@@ -1052,8 +1071,12 @@ class solve_nonlinear_problem(collocation_discretization):
     def set_tolerance(self, tolerance):
         self.__tolerance = tolerance
 
+    def set_domain(self, domain):
+        super().set_domain(domain)
+
     def set_problem(self, problem):
         self.__problem = problem
+        self.set_domain( problem.get_domain() )
         if self.__use_mpmath:
             self.__problem.set_use_mp_math(self.__mp_ref)
         self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions() )
