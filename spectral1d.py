@@ -5,6 +5,8 @@ import pickle
 import mpmath #for custom pecision arithmetic
 from scipy.optimize import minimize
 from scipy.integrate import ode
+from inspect import isfunction, isclass
+
 
 class basis_functions(object):
     def __init__(self, N, L = 1, use_mpmath = False, prec = 100, calc_domain = [0, np.inf]):
@@ -653,6 +655,11 @@ class collocation_discretization(basic_discretization):
         return(M)
 
     def bilinear_form(self, operator, alpha):
+        if isfunction(alpha) or isclass(alpha): #isclass ok? operator () in python?
+            call_alpha = True
+        else:
+            call_alpha = False
+
         if( super().is_using_mpmath() ):
             S = super().get_mpmath_ref().zeros(self._N+self._additional_boundaries, self._N+self._additional_boundaries)
         else:        
@@ -662,7 +669,13 @@ class collocation_discretization(basic_discretization):
         for j in range(0, self._N+self._additional_boundaries):
             for k in range(0, self._N+self._additional_boundaries):
                  if j>=is_there_boundaries and j<self._N+is_there_boundaries:
-                    ppp = alpha*operator(k, self.discrete_points_in_basis(j-is_there_boundaries) )
+                    if call_alpha:
+                        all_x = self.discrete_points_in_domain(j - is_there_boundaries)
+                        alpha_l = alpha(all_x)
+                    else:
+                        alpha_l = alpha
+
+                    ppp = alpha_l*operator(k, self.discrete_points_in_basis(j-is_there_boundaries) )
                     S[j,k] = ppp[0]#operator_in_basis_funcs(k, self.discrete_points_in_basis_with_bounds(j) )
         return(S)
 

@@ -16,6 +16,7 @@ class basic_problem(object):
         self._use_method = "newton"
         self._tolerance = 1.0e-7
         self.__use_mp_math = False
+        self.__initial_guess_solution = lambda x: self.__exp(-x)
 
     def file_name_prefix(self):
         return self._file_name_prefix
@@ -55,6 +56,14 @@ class basic_problem(object):
         self.__use_mp_math = True
         self.__use_mpmath = mp_ref
         self.__set_functions()
+    
+    def base_solution(self, x):
+        return self.__initial_guess_solution(x)
+
+    def set_parameters(self, initial_guess_solution = None ):
+        if type(initial_guess_solution) != type(None):
+            self.__initial_guess_solution = initial_guess_solution
+
 
 class problem_1(basic_problem):
     def __init__(self):
