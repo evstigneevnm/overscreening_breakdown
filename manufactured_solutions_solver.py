@@ -128,7 +128,7 @@ class linear_manufactured_solutions_solver(object):
 
     def __figures_coefficients(self):
         file_path_name = self.__default_folder+"/"+self._file_name_prefix+"N_coeffs.pdf"
-        title = "|$\hat{u}}(N)$| decay for "+self._problem_name
+        title = r"|$\hat{u}(N)$| decay for "+self._problem_name
         legend = []
         N_all = self._N_all
         L_all = self._L_all
@@ -149,7 +149,7 @@ class linear_manufactured_solutions_solver(object):
         plt.clf()
 
         file_path_name = self.__default_folder+"/"+self._file_name_prefix+"L_coeffs.pdf"
-        title = "|$\hat{u}}(L)$| decay for "+self._problem_name
+        title = r"|$\hat{u}(L)$| decay for "+self._problem_name
         legend = []
         c_c_L = []
         for c_c_ in c_c_all:
