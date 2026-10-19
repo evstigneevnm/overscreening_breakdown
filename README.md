@@ -3,17 +3,28 @@
 #### This is a repository for the pseudo-spectral collocation numerical method for the overscreening breakdown problem. For the discription, see bellow.
 
 ## Requirements and Installation
-* #### python 3.8 or newer with modules:
-- numpy
-- matplotlib
-- scipy
-- pickle
-* #### clone repository locally into your local folder
+
+> **Platform support:** Linux only. Windows and other operating systems have not
+> been tested and are currently unsupported.
+
+Use Python 3.9 through 3.13, the versions covered by CI. After cloning the repository,
+activate your chosen Python environment and install the validated dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+[requirements.txt](requirements.txt) automatically selects the validated package
+versions for your Python interpreter. It includes the numerical libraries, `gmpy2`
+acceleration, and the notebook kernel/inline plotting stack. Open the notebooks
+using your existing Jupyter interface, such as Anaconda's JupyterLab.
 
 ## Testing:
 
-The lightweight GitHub Actions suite runs on Python 3.12 and 3.13 with both
-the pure Python and gmpy mpmath backends. It covers NumPy float64 with `newton`,
+The lightweight GitHub Actions suite runs on Ubuntu 24.04 with Python 3.9, 3.10,
+3.11, 3.12, and 3.13, using both the pure Python and gmpy mpmath backends, for ten
+jobs in total.
+It covers NumPy float64 with `newton`,
 `root`, `root_no_jac`, and `nonlin_solve`, and mpmath Newton with 15, 30, 50,
 100, and 120 decimal digits. Unsupported mpmath/SciPy combinations must raise
 `ValueError`.
@@ -30,8 +41,8 @@ python -B -m unittest -v \
 
 Set `MPMATH_NOGMPY=1` before starting Python to test the pure Python backend.
 For the gmpy backend, install `gmpy2` and leave `MPMATH_NOGMPY` unset (an empty
-value still disables gmpy). Dependency versions used by CI are recorded in
-[the workflow](.github/workflows/ci.yml) until project requirements are finalized.
+value still disables gmpy). CI installs the same
+[requirements.txt](requirements.txt) used for local environments.
 
 The light manufactured tests reuse the existing analytic problems with small,
 fixed resolutions. They check residuals, boundary conditions, analytic error,

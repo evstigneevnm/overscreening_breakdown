@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
         mp_backend: ["python", "gmpy"]
     env:
       MPLBACKEND: Agg
@@ -41,11 +41,7 @@ jobs:
       - name: Install validated test dependencies
         run: |
           mkdir -p "$CI_ARTIFACT_DIR"
-          # Keep these here until the project requirements are reviewed.
-          python -m pip install \
-            numpy==2.3.5 scipy==1.18.0 matplotlib==3.10.6 \
-            mpmath==1.3.0 gmpy2==2.2.1 matplotlib-inline==0.2.1 \
-            ipython==9.7.0 ipykernel==6.31.0
+          python -m pip install -r requirements.txt
       - name: Select Python mpmath backend
         if: matrix.mp_backend == 'python'
         run: echo "MPMATH_NOGMPY=1" >> "$GITHUB_ENV"

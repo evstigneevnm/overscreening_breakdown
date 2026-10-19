@@ -1,0 +1,26 @@
+# Validated on Linux with Python 3.9 through 3.13.
+# Windows and other operating systems are currently untested and unsupported.
+
+# NumPy and SciPy versions compatible with each Python interpreter.
+numpy==2.0.2; python_version == "3.9"
+numpy==2.2.6; python_version == "3.10"
+numpy==2.3.5; python_version >= "3.11"
+scipy==1.13.1; python_version == "3.9"
+scipy==1.15.3; python_version == "3.10"
+scipy==1.16.3; python_version == "3.11"
+scipy==1.18.0; python_version >= "3.12"
+
+# Plotting and arbitrary-precision arithmetic.
+matplotlib==3.9.4; python_version == "3.9"
+matplotlib==3.10.6; python_version >= "3.10"
+mpmath==1.3.0
+
+# Accelerated mpmath backend; CI also tests the pure Python backend.
+gmpy2==2.2.1
+
+# Notebook kernel and inline plotting.
+ipython==8.18.1; python_version == "3.9"
+ipython==8.37.0; python_version == "3.10"
+ipython==9.7.0; python_version >= "3.11"
+ipykernel==6.31.0
+matplotlib-inline==0.2.1
