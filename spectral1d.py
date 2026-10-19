@@ -1100,6 +1100,7 @@ class solve_nonlinear_problem(collocation_discretization):
         return relnorm
 
     def solve_problem(self, c0 = None):
+        self.__converged = False
         if self.__problem==None:
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
         if self.__use_mpmath:
@@ -1142,10 +1143,13 @@ class solve_nonlinear_problem(collocation_discretization):
             # print(res)
             c = res[0]
 
-        if self.__use_method == "root":
+        # Keep "nonlin_solve" as an alias for the public SciPy root solver.
+        if self.__use_method in ("root", "nonlin_solve"):
             if self.__use_mpmath:
                 raise ValueError("only 'newton' can be used to solve with mpmath library")            
-            res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*self.__sqrt(self._M), jac=self.__linearization_operator )
+            res = optimize.root(self.__residual_operator, c, method="hybr",
+                                tol=self.__tolerance*self.__sqrt(self._M),
+                                jac=self.__linearization_operator)
             converged = res.success
             c = res.x;
         elif self.__use_method == "root_no_jac":
@@ -1154,14 +1158,6 @@ class solve_nonlinear_problem(collocation_discretization):
             res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*self.__sqrt(self._M))
             converged = res.success
             c = res.x;
-        elif self.__use_method == "nonlin_solve":
-            if self.__use_mpmath:
-                raise ValueError("only 'newton' can be used to solve with mpmath library")                        
-            try:
-                c = optimize.nonlin.nonlin_solve(self.__residual_operator, c, jac=self.__linearization_operator)
-            except:
-                converged = False
-
         elif self.__use_method == "newton":
             residual_norm_0 = self.__sqrt(self._M)#self.residual_L2_norm(c_ref)
             residual_norm = residual_norm_0
