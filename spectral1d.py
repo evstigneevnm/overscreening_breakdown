@@ -1109,9 +1109,9 @@ class solve_nonlinear_problem(collocation_discretization):
 
         converged = False
         c_ref = self.__base_solution_expand()
-        if np.any(c0) != None:
+        if c0 is not None:
             self.__base_solution = c0   
-        if np.any(self.__base_solution) == None:
+        if self.__base_solution is None:
             c0 = self.__base_solution_expand()
         else:
             c0 = self.function_expand( lambda x: self.solution_in_domain(self.__base_solution, x) )
@@ -1265,28 +1265,54 @@ class solve_nonlinear_problem(collocation_discretization):
     
     def __save_data(self, file_name, data):
         if self.__use_mpmath:
-            print("Warning! Writing data to file is performed in float128 binary format, some data may be lost")
-        
-        data_1 = np.float128(data)
+            coefficients = [self.__coefficient_as_mpf(value)
+                            for value in np.asarray(data, dtype=object).reshape(-1)]
+            data_1 = {"format_version": 1, "backend": "mpmath",
+                      "precision_dps": self.__mp_ref.mp.dps, "coefficients": coefficients}
+        else:
+            data_1 = {"format_version": 1, "backend": "numpy",
+                      "coefficients": np.asarray(data, dtype=np.float64).reshape(-1)}
         with open(file_name, 'wb') as handle:
             pickle.dump(data_1, handle)
+
+    def __coefficient_as_mpf(self, value):
+        # Reconstructing an existing mpf would round it to the current precision.
+        if type(value) is self.__mp_ref.mpf:
+            return value
+        if isinstance(value, (float, np.floating)):
+            # Keep the stored binary value when importing legacy extended precision.
+            if not np.isfinite(value):
+                return self.__mp_ref.mpf(str(value))
+            numerator, denominator = value.as_integer_ratio()
+            precision = max(self.__mp_ref.mp.prec, np.finfo(type(value)).nmant + 1)
+            with self.__mp_ref.workprec(precision):
+                return self.__mp_ref.mpf(numerator) / denominator
+        return self.__mp_ref.mpf(value)
 
     def __load_data(self, file_name):
         with open(file_name, 'rb') as handle:
             data = pickle.load(handle)
+        if isinstance(data, dict):
+            if data.get("format_version") != 1:
+                raise ValueError("Unsupported solution file format version.")
+            if data.get("backend") not in ("numpy", "mpmath") or "coefficients" not in data:
+                raise ValueError("Invalid solution file format.")
+            data = data["coefficients"]
+        # Older files contain a bare NumPy array, often with dtype float128.
         if self.__use_mpmath:
-            print("Warning! Reading data from file is performed in float128 binary format, some data may be lost")
-            # sizes = np.shape(data)
-            # data_1 = self.__mp_ref.zeros(sizes[0],sizes[1])
-            data_1 = self.__mp_ref.matrix(data.tolist())
+            coefficients = [self.__coefficient_as_mpf(value)
+                            for value in np.asarray(data, dtype=object).reshape(-1)]
+            data_1 = self.__mp_ref.matrix(coefficients)
         else:
-            data_1 = data
+            data_1 = np.asarray(data, dtype=np.float64).reshape(-1)
         return data_1
 
     def save_solution(self, file_name, c):
+        """Save coefficient values and backend metadata without reducing mpmath precision."""
         self.__save_data(file_name, c)
 
     def load_data(self, file_name):
+        """Load a coefficient vector in the active backend, including legacy array files."""
         c = self.__load_data(file_name)
         return c
 
