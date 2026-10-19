@@ -835,10 +835,13 @@ class collocation_discretization(basic_discretization):
         def func_in_basis(t):
             return function(self.arg_from_basis_to_domain(t))
 
+        def reference(t):
+            return np.asarray(np.power(func_in_basis(t), 2)).item()
+
         def difference(t):
-            return np.power((func_in_basis(t) - self.solution_in_basis(c, t)),2)
+            return np.asarray(np.power(func_in_basis(t) - self.solution_in_basis(c, t), 2)).item()
         
-        ref = integrate.quad( lambda t: np.power(func_in_basis(t),2), self.basis_boundaries()[0], self.basis_boundaries()[1] )
+        ref = integrate.quad( reference, self.basis_boundaries()[0], self.basis_boundaries()[1] )
 
         res = integrate.quad( difference, self.basis_boundaries()[0], self.basis_boundaries()[1] )
         return np.sqrt(res[0]/ref[0])
