@@ -45,7 +45,7 @@ class ScipySolverTests(unittest.TestCase):
 
     def check_numerical_solution(self, segment):
         solutions = {}
-        for method in ("newton", "root", "nonlin_solve"):
+        for method in ("newton", "root", "root_no_jac", "nonlin_solve"):
             with self.subTest(method=method):
                 solver = self.solver(method=method, segment=segment)
                 coefficients = solver.solve_problem()
@@ -80,9 +80,10 @@ class ScipySolverTests(unittest.TestCase):
         np.testing.assert_allclose(
             solutions["nonlin_solve"], solutions["newton"], rtol=1e-8, atol=1e-10
         )
-        np.testing.assert_allclose(
-            solutions["nonlin_solve"], solutions["root"], rtol=1e-8, atol=1e-10
-        )
+        for method in ("root", "root_no_jac"):
+            np.testing.assert_allclose(
+                solutions["nonlin_solve"], solutions[method], rtol=1e-8, atol=1e-10
+            )
 
     def test_legacy_method_solves_half_line_problem(self):
         self.check_numerical_solution(segment=False)
@@ -132,11 +133,13 @@ class ScipySolverTests(unittest.TestCase):
                         solver.solve_problem()
                 self.assertFalse(solver.is_converged())
 
-    def test_legacy_method_rejects_mpmath(self):
-        solver = self.solver(use_mpmath=True)
-        with self.assertRaisesRegex(ValueError, "only 'newton'.*mpmath"):
-            solver.solve_problem()
-        self.assertFalse(solver.is_converged())
+    def test_scipy_methods_reject_mpmath(self):
+        for method in ("root", "root_no_jac", "nonlin_solve"):
+            with self.subTest(method=method):
+                solver = self.solver(method=method, use_mpmath=True)
+                with self.assertRaisesRegex(ValueError, "only 'newton'.*mpmath"):
+                    solver.solve_problem()
+                self.assertFalse(solver.is_converged())
 
 
 if __name__ == "__main__":

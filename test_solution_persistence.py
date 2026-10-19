@@ -79,36 +79,42 @@ class SolutionPersistenceTests(unittest.TestCase):
             self.assertEqual(actual, mp.mpf(numerator) / denominator)
 
     def test_mpmath_roundtrip_preserves_exact_values_at_lower_precision(self):
-        source = self.solver(use_mpmath=True, precision=100)
-        coefficients = mp.matrix([
-            mp.sqrt(2),
-            mp.mpf("1.234567890123456789012345678901234567890123456789"),
-            -mp.pi,
-        ])
-        original_values = list(coefficients)
-        path = self.directory / "mpmath.pickle"
-        source.save_solution(path, coefficients)
+        for precision in (15, 30, 50, 100, 120):
+            with self.subTest(precision=precision):
+                source = self.solver(use_mpmath=True, precision=precision)
+                coefficients = mp.matrix([
+                    mp.sqrt(2),
+                    mp.mpf("1.234567890123456789012345678901234567890123456789"),
+                    -mp.pi,
+                ])
+                original_values = list(coefficients)
+                path = self.directory / "mpmath.pickle"
+                source.save_solution(path, coefficients)
 
-        destination = self.solver(use_mpmath=True, precision=25)
-        restored = destination.load_data(path)
+                destination_precision = min(25, precision)
+                destination = self.solver(use_mpmath=True, precision=destination_precision)
+                restored = destination.load_data(path)
 
-        self.assertEqual(mp.mp.dps, 25)
-        self.assertIsInstance(restored, mp.matrix)
-        self.assertEqual((restored.rows, restored.cols), (3, 1))
-        self.assertEqual(list(restored), original_values)
+                self.assertEqual(mp.mp.dps, destination_precision)
+                self.assertIsInstance(restored, mp.matrix)
+                self.assertEqual((restored.rows, restored.cols), (3, 1))
+                self.assertEqual(list(restored), original_values)
 
     def test_saving_mpmath_values_after_lowering_precision_is_exact(self):
-        solver = self.solver(use_mpmath=True, precision=100)
-        coefficients = mp.matrix([mp.sqrt(2), mp.pi, mp.mpf("1e-40")])
-        original_values = list(coefficients)
-        mp.mp.dps = 15
-        path = self.directory / "lowered-precision.pickle"
-        solver.save_solution(path, coefficients)
+        for precision in (15, 30, 50, 100, 120):
+            with self.subTest(precision=precision):
+                solver = self.solver(use_mpmath=True, precision=precision)
+                coefficients = mp.matrix([mp.sqrt(2), mp.pi, mp.mpf("1e-40")])
+                original_values = list(coefficients)
+                lowered_precision = min(15, precision - 5)
+                mp.mp.dps = lowered_precision
+                path = self.directory / "lowered-precision.pickle"
+                solver.save_solution(path, coefficients)
 
-        restored = solver.load_data(path)
+                restored = solver.load_data(path)
 
-        self.assertEqual(mp.mp.dps, 15)
-        self.assertEqual(list(restored), original_values)
+                self.assertEqual(mp.mp.dps, lowered_precision)
+                self.assertEqual(list(restored), original_values)
 
     def test_numpy_file_can_be_loaded_by_mpmath(self):
         coefficients = np.array([np.pi, -0.125, 1e-20], dtype=np.float64)

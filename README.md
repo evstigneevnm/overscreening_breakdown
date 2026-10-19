@@ -11,6 +11,40 @@
 * #### clone repository locally into your local folder
 
 ## Testing:
+
+The lightweight GitHub Actions suite runs on Python 3.12 and 3.13 with both
+the pure Python and gmpy mpmath backends. It covers NumPy float64 with `newton`,
+`root`, `root_no_jac`, and `nonlin_solve`, and mpmath Newton with 15, 30, 50,
+100, and 120 decimal digits. Unsupported mpmath/SciPy combinations must raise
+`ValueError`.
+
+Run the same suite locally from the repository root:
+
+```bash
+MPLBACKEND=Agg OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+python -B -m unittest -v \
+  test_solution_persistence test_scipy_solver test_l2_error \
+  test_manufactured_linear_light test_manufactured_nonlinear_light \
+  test_plotting_light
+```
+
+Set `MPMATH_NOGMPY=1` before starting Python to test the pure Python backend.
+For the gmpy backend, install `gmpy2` and leave `MPMATH_NOGMPY` unset (an empty
+value still disables gmpy). Dependency versions used by CI are recorded in
+[the workflow](.github/workflows/ci.yml) until project requirements are finalized.
+
+The light manufactured tests reuse the existing analytic problems with small,
+fixed resolutions. They check residuals, boundary conditions, analytic error,
+refinement, and agreement between methods/backends. The plotting smoke tests
+render PDFs and an IPython inline PNG. Spatial approximation error is checked
+separately from arithmetic precision; increasing decimal digits alone does not
+remove discretization error.
+
+Plot files use temporary directories by default. Set `CI_ARTIFACT_DIR=ci-artifacts`
+to keep them. GitHub Actions retains the plots, test log, and installed dependency
+list for seven days. The original full manufactured sweeps and notebooks remain
+manual tests and are excluded from CI through an explicit module list.
+
 #### For manufactured glabal tests run the following from your local folder:
 ```
 python3 test_manufactures_solutions.py

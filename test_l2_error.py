@@ -25,13 +25,13 @@ class L2ErrorTests(unittest.TestCase):
             category=DeprecationWarning,
         )
 
-    def discretization(self, segment=False, use_mpmath=False):
+    def discretization(self, segment=False, use_mpmath=False, precision=80):
         return collocation_discretization(
             4,
             domain=[0, 2] if segment else [0, np.inf],
             L=2,
             use_mpmath=use_mpmath,
-            prec=80,
+            prec=precision,
         )
 
     def coefficients(self, values, use_mpmath):
@@ -83,14 +83,21 @@ class L2ErrorTests(unittest.TestCase):
 
     def test_mpmath_residual_is_computed_before_float_conversion(self):
         for segment in (False, True):
-            with self.subTest(segment=segment):
-                discretization = self.discretization(segment, use_mpmath=True)
-                tiny_difference = mp.mpf("1e-40")
-                coefficients = mp.matrix([1 + tiny_difference])
+            for precision in (15, 30, 50, 80, 100, 120):
+                with self.subTest(segment=segment, precision=precision):
+                    discretization = self.discretization(
+                        segment, use_mpmath=True, precision=precision
+                    )
+                    tiny_difference = mp.mpf(10) ** -(precision // 2)
+                    coefficients = mp.matrix([1 + tiny_difference])
+                    # Compare with the actual representable perturbation, which
+                    # differs from its decimal input at the lowest precision.
+                    expected = float(coefficients[0] - 1)
 
-                actual = discretization.L2_error(coefficients, lambda x: mp.mpf(1))
+                    actual = discretization.L2_error(coefficients, lambda x: mp.mpf(1))
 
-                self.assertAlmostEqual(actual / 1e-40, 1.0, places=13)
+                    self.assertGreater(actual, 0)
+                    self.assertAlmostEqual(actual / expected, 1.0, places=13)
 
     def test_basis_solution_remains_vectorized(self):
         for segment in (False, True):
