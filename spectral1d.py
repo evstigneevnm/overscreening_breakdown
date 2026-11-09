@@ -1094,6 +1094,9 @@ class solve_nonlinear_problem(collocation_discretization):
         super().set_domain(domain)
 
     def set_problem(self, problem):
+        validate = getattr(problem, "validate_collocation_compatibility", None)
+        if validate is not None:
+            validate()
         self.__problem = problem
         self.set_domain( problem.get_domain() )
         if self.__use_mpmath:
@@ -1110,6 +1113,9 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__newton_result = None
         if self.__problem==None:
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
+        validate = getattr(self.__problem, "validate_collocation_compatibility", None)
+        if validate is not None:
+            validate()
         if self.__use_mpmath:
             print("Warning! Using mpmath with", self.__mp_ref.mp.dps, "significant digits and backend", self.__mp_ref.libmp.BACKEND ,". Solution will be slow!" )
         if not self.__use_mpmath and self.__use_adjoint_opimization:

@@ -36,6 +36,7 @@ MPLBACKEND=Agg OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python -B -m unittest -v \
   test_solution_persistence test_scipy_solver test_l2_error \
   test_newton_globalization \
+  test_arithmetic test_coefficients test_flux_problem test_physical_rhs \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
 ```
@@ -64,6 +65,62 @@ Plot files use temporary directories by default. Set `CI_ARTIFACT_DIR=ci-artifac
 to keep them. GitHub Actions retains the plots, test log, and installed dependency
 list for seven days. The original full manufactured sweeps and notebooks remain
 manual tests and are excluded from CI through an explicit module list.
+
+## Physical problem interface
+
+`overscreening_breakdown` exposes its existing `delta` parameter and an immutable
+`epsilon` description. `physical_rhs(x, u)` and `physical_rhs_u(x, u)` evaluate
+the unscaled source and its analytic derivative, without homotopy damping.
+The existing `right_hand_side` methods retain their collocation normalization
+and homotopy factor. The Gaussian normalization used by the model is preserved.
+
+Bind a snapshot of a problem to arithmetic owned by its eventual solver:
+
+```python
+from arithmetic import MpmathArithmetic
+from coefficients import Coefficient
+from overscreening_breakdown import overscreening_breakdown
+
+epsilon = Coefficient(
+    lambda x, a: a.scalar(1) if x < a.scalar("1") else a.scalar(2),
+    lower_bound=1, upper_bound=2, wall_value=1, interfaces=("1",),
+)
+problem = overscreening_breakdown(epsilon=epsilon)
+problem.set_parameters(delta="2", gamma="0.5", u0="1")
+physical = problem.bind(MpmathArithmetic(dps=120))
+value = physical.physical_rhs("0.5", "0.1")
+wall_epsilon = physical.epsilon.wall_value
+```
+
+`NumpyArithmetic()` supplies float64 operations. Each `MpmathArithmetic` owns an
+independent context and leaves global mpmath precision unchanged. Use decimal
+strings or integers for high-precision parameters; an existing binary float
+retains its original rounding. Binding copies parameter and boundary values;
+later changes to the source problem do not change an existing snapshot.
+
+`Coefficient(function, ...)` uses a scalar `function(x, arithmetic)` callback.
+`Coefficient.from_function(epsilon_x, ...)` adapts an explicit one-argument
+`epsilon(x)` function. Supply positive finite lower/upper bounds, the right
+wall trace, and every interior interface. These are caller declarations;
+evaluations check the bounds, while regularity is not inferred by sampling.
+At zero, evaluation returns the declared right trace. `ConstantCoefficient`
+describes a constant. Omitting `epsilon` in `set_parameters` preserves it.
+
+For a different physical source, `physical_problem.FluxProblem` accepts `delta`,
+`epsilon`, `f(x, u, arithmetic)`, `f_u(x, u, arithmetic)`, and optional domain,
+boundary data and `initial_guess(x, arithmetic)`, then exposes the same bound
+interface. Inputs and outputs are real scalars. Nonfinite source outputs raise
+`OverflowError`, allowing a nonlinear solver to backtrack a trial state.
+User callbacks must use compatible arithmetic and keep any captured state
+unchanged. The legacy `initial_guess_solution(x)` callback follows that same
+responsibility when adapted to a bound BSK problem.
+
+This stage provides problem descriptions and evaluations; Galerkin assembly is
+still pending. Existing collocation solvers accept only explicitly constant
+`epsilon=1`. Their legacy mpmath path still uses global precision and mutates
+legacy problem arithmetic; precision isolation applies to the new bound views.
+The physical interface allows `delta=0`; a fourth-order mixed solver must
+separately reject that second-order case.
 
 #### For manufactured glabal tests run the following from your local folder
 
