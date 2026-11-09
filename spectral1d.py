@@ -8,6 +8,7 @@ from scipy.integrate import ode
 from inspect import isfunction, isclass
 
 from nonlinear_solver import LinearSolveError, NonlinearSystem, solve_newton
+from collocation_problem import CollocationProblemAdapter, prepare_collocation_problem
 
 
 class basis_functions(object):
@@ -22,7 +23,7 @@ class basis_functions(object):
         else:
             self.__mp = np
         self._calc_domain = calc_domain
-        self._domain = (0,np.pi)
+        self._domain = (0,self.__mp.pi)
         self.__cos = np.vectorize(self.__mp.cos)
         self.__sin = np.vectorize(self.__mp.sin)
         if self.__use_mpmath:
@@ -747,9 +748,21 @@ class collocation_discretization(basic_discretization):
                 matrix_boundary_row_index = matrix_boundary_row_index + 1
         return(S)
 
-    def linear_functional(self, operator, **kwargs):
+    def linear_functional(self, operator, interior_only=False, **kwargs):
         x = self.all_discrete_points_in_domain()
         t = self.all_discrete_points_in_basis()
+        if interior_only:
+            # Boundary rows contain prescribed data, not source evaluations.
+            # In particular, f need not be defined at the dummy x=0 formerly
+            # inserted for these rows.
+            dtype = object if self.is_using_mpmath() else np.float64
+            values = np.asarray(operator(x, t, **kwargs), dtype=dtype)
+            if values.shape != x.shape:
+                raise ValueError("interior callback must preserve the collocation point shape")
+            rhs = np.zeros(self._N+self._additional_boundaries, dtype=dtype)
+            start = 1 if self._additional_boundaries else 0
+            rhs[start:start+self._N] = values
+            return rhs
         if self._additional_boundaries>0:
             x = np.insert(x,[0],[0])
             t = np.insert(t,[0],[0])
@@ -813,19 +826,19 @@ class collocation_discretization(basic_discretization):
 
         return sol
 
-    def function_values(self, f):
+    def function_values(self, f, interior_only=False):
         def func_wrapper(x, t):
             return f(x)
 
-        vals = self.linear_functional(func_wrapper)
+        vals = self.linear_functional(func_wrapper, interior_only=interior_only)
         vals = self.linear_functional_boundary(vals)
         
         return(vals)
 
-    def function_expand(self, f):
+    def function_expand(self, f, interior_only=False):
         M = self.mass_matrix()
         M = self.set_boundary_bilinear_form_tau_method(M)
-        b = self.function_values(f)
+        b = self.function_values(f, interior_only=interior_only)
         if( super().is_using_mpmath() ):
             c = super().get_mpmath_ref().lu_solve(M, b)
         else:
@@ -971,6 +984,8 @@ class collocation_discretization(basic_discretization):
 
 class solve_nonlinear_problem(collocation_discretization):
     def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, use_adjoint_opimization = False):  #log_10(2^53) \sim 16
+        if problem is not None and domain is None:
+            problem = prepare_collocation_problem(problem, use_mpmath=use_mpmath, prec=prec)
         if domain != None and problem == None:
             super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
             self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec, use_adjoint_opimization = use_adjoint_opimization)
@@ -998,6 +1013,7 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__newton_result = None
         self.__use_adjoint_opimization = use_adjoint_opimization
         self.__use_mpmath = super().is_using_mpmath()
+        self.__precision = prec
         self.__mp_ref = super().get_mpmath_ref()
         if self.__use_mpmath:
             self.__dot = self.__mp_ref.fdot
@@ -1042,7 +1058,10 @@ class solve_nonlinear_problem(collocation_discretization):
             u = self.solution_in_basis(c, t) 
             return self.__problem.right_hand_side(x, u, q)
 
-        rhs = self.linear_functional(local_operator, c=c, q=q)
+        rhs = self.linear_functional(
+            local_operator, interior_only=isinstance(self.__problem, CollocationProblemAdapter),
+            c=c, q=q,
+        )
         rhs = self.linear_functional_boundary(rhs)
         return rhs
     
@@ -1074,11 +1093,17 @@ class solve_nonlinear_problem(collocation_discretization):
         return A
 
     def __base_solution_expand(self):
-        c0 = self.function_expand(self.__problem.base_solution)
+        c0 = self.function_expand(
+            self.__problem.base_solution,
+            interior_only=isinstance(self.__problem, CollocationProblemAdapter),
+        )
         return c0
     
     def __base_solution_values(self):
-        c0 = self.function_values(self.__problem.base_solution)
+        c0 = self.function_values(
+            self.__problem.base_solution,
+            interior_only=isinstance(self.__problem, CollocationProblemAdapter),
+        )
         return c0
 
     def __set_boundary_conditoins_on_domain(self, values):
@@ -1094,12 +1119,15 @@ class solve_nonlinear_problem(collocation_discretization):
         super().set_domain(domain)
 
     def set_problem(self, problem):
+        problem = prepare_collocation_problem(
+            problem, use_mpmath=self.__use_mpmath, prec=self.__precision,
+        )
         validate = getattr(problem, "validate_collocation_compatibility", None)
         if validate is not None:
             validate()
         self.__problem = problem
         self.set_domain( problem.get_domain() )
-        if self.__use_mpmath:
+        if self.__use_mpmath and not isinstance(problem, CollocationProblemAdapter):
             self.__problem.set_use_mp_math(self.__mp_ref)
         self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions() )
         self.__form_matrices()
@@ -1128,7 +1156,10 @@ class solve_nonlinear_problem(collocation_discretization):
         if self.__base_solution is None:
             c0 = self.__base_solution_expand()
         else:
-            c0 = self.function_expand( lambda x: self.solution_in_domain(self.__base_solution, x) )
+            c0 = self.function_expand(
+                lambda x: self.solution_in_domain(self.__base_solution, x),
+                interior_only=isinstance(self.__problem, CollocationProblemAdapter),
+            )
         c = c0;
         self.__globalization = 0
 
@@ -1228,10 +1259,18 @@ class solve_nonlinear_problem(collocation_discretization):
             print(sum(self.dddpsi(k, j[self._M-1] ) ))
             print(self.dddpsi(10, j[self._M-1] ))
 
+        try:
+            final_norm = self.residual_L2_norm(c)
+        except OverflowError:
+            # Newton already classifies overflowing physical callbacks as a
+            # numerical failure. Reporting that failure must not raise again.
+            if self.__newton_result is None:
+                raise
+            final_norm = self.__mp_ref.inf
         if converged:
-            print("converged with norm =", self.__format_scalar(self.residual_L2_norm(c)))
+            print("converged with norm =", self.__format_scalar(final_norm))
         else:
-            print("failed to converge with norm =", self.__format_scalar(self.residual_L2_norm(c)))
+            print("failed to converge with norm =", self.__format_scalar(final_norm))
             
         self.__current_solution = c
         self.__converged = converged

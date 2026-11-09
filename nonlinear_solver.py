@@ -173,7 +173,11 @@ def solve_newton(
                 stage_iterations += 1
                 total_iterations += 1
                 try:
-                    jacobian = system.jacobian(state, q)
+                    try:
+                        jacobian = system.jacobian(state, q)
+                    except OverflowError:
+                        reason = "nonfinite_jacobian"
+                        break
                     if not finite_vector(matrix_entries(jacobian)):
                         reason = "nonfinite_jacobian"
                         break

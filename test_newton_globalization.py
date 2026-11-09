@@ -212,6 +212,28 @@ class NewtonGlobalizationTests(unittest.TestCase):
                         self.assertEqual(result.state[1], 0)
                         self.assertEqual(len(solves), 0)
 
+    def test_jacobian_overflow_follows_the_nonfinite_failure_policy(self):
+        for use_mpmath in self.backends():
+            for use_globalization in (False, True):
+                with self.subTest(mpmath=use_mpmath, globalization=use_globalization):
+                    def jacobian(z, q, ctx):
+                        if q == 0:
+                            raise OverflowError("physical derivative overflow")
+                        return [[1]]
+
+                    system, _ = self.system(
+                        [0], lambda z, q, ctx: [z[0] - 1], jacobian, use_mpmath,
+                    )
+                    result = solve_newton(
+                        system, use_globalization=use_globalization,
+                        homotopy_cutoff="0.1", max_stages=20,
+                    )
+                    self.assertEqual(result.stages[0].reason, "nonfinite_jacobian")
+                    self.assertEqual(result.converged, use_globalization)
+                    self.assertEqual(result.state[0], 1 if use_globalization else 0)
+                    if use_globalization:
+                        self.assertEqual(result.homotopy, 0)
+
     def test_nonfinite_newton_step_is_rejected_without_changing_state(self):
         for use_mpmath in self.backends():
             for value in ("nan", "inf"):

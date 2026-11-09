@@ -37,6 +37,7 @@ python -B -m unittest -v \
   test_solution_persistence test_scipy_solver test_l2_error \
   test_newton_globalization \
   test_arithmetic test_coefficients test_flux_problem test_physical_rhs \
+  test_collocation_adapter test_flux_collocation \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
 ```
@@ -115,12 +116,56 @@ User callbacks must use compatible arithmetic and keep any captured state
 unchanged. The legacy `initial_guess_solution(x)` callback follows that same
 responsibility when adapted to a bound BSK problem.
 
-This stage provides problem descriptions and evaluations; Galerkin assembly is
-still pending. Existing collocation solvers accept only explicitly constant
-`epsilon=1`. Their legacy mpmath path still uses global precision and mutates
-legacy problem arithmetic; precision isolation applies to the new bound views.
-The physical interface allows `delta=0`; a fourth-order mixed solver must
-separately reject that second-order case.
+`solve_nonlinear_problem` accepts an unbound `FluxProblem` directly when epsilon
+is explicitly constant 1. It binds the description using the solver's backend
+and precision, then adapts the physical callbacks to collocation's existing
+normalization and homotopy. Both the constructor and `set_problem()` perform
+this preparation. Each solver receives its own view; the description is not
+modified. Pass the original description rather than an already bound snapshot,
+which could contain values rounded at another precision.
+
+For a finite interval, supply two boundary conditions for `delta=0` or four for
+`delta>0`, with derivative orders below the differential order. On the half-line,
+supply one or two wall conditions respectively, with an optional zero value at
+infinity. Derivative conditions at infinity and nonzero far-field values are
+unsupported by the adapter. For `delta=0`, replace the default boundary tuple,
+which includes a third derivative, with second-order boundary data.
+
+The legacy collocation basis still uses global mpmath precision. Independent
+bound callback contexts do not make the entire collocation solver independent
+of that global setting. Legacy problem objects retain their existing path.
+Galerkin assembly is pending; the future fourth-order mixed solver will require
+`delta>0`.
+
+### FluxProblem collocation example
+
+Run the complete [example](examples/flux_problem_collocation.py) from the
+repository root:
+
+```bash
+python -B -m examples.flux_problem_collocation
+```
+
+It constructs a nonlinear manufactured problem with the exact solution
+`u(x) = 1/(1+x)`, `delta=2`, `epsilon=1`, `u(0)=1`, and `u'''(0)=-6`.
+The scalar source callbacks use the supplied arithmetic and contain no
+collocation normalization. The same immutable problem is solved with NumPy
+`root` and 50-digit mpmath Newton; both runs report convergence and sampled
+field errors. CI exercises these example solves as well.
+
+The solver call uses the existing interface:
+
+```python
+from examples.flux_problem_collocation import make_problem
+from spectral1d import solve_nonlinear_problem
+
+problem = make_problem()
+solver = solve_nonlinear_problem(
+    N=8, L=1, problem=problem, use_method="newton",
+    use_mpmath=True, prec=50, tolerance="1e-35",
+)
+coefficients = solver.solve_problem()
+```
 
 #### For manufactured glabal tests run the following from your local folder
 
