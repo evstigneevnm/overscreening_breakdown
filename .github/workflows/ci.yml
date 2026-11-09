@@ -68,7 +68,7 @@ jobs:
             test_solution_persistence test_scipy_solver test_l2_error \
             test_newton_globalization \
             test_arithmetic test_coefficients test_flux_problem test_physical_rhs \
-            test_collocation_adapter test_flux_collocation \
+            test_collocation_adapter test_flux_collocation test_collocation_mapping \
             test_rational_mapping test_galerkin_quadrature test_galerkin_basis \
             test_manufactured_linear_light test_manufactured_nonlinear_light \
             test_plotting_light \

@@ -9,6 +9,8 @@ from inspect import isfunction, isclass
 
 from nonlinear_solver import LinearSolveError, NonlinearSystem, solve_newton
 from collocation_problem import CollocationProblemAdapter, prepare_collocation_problem
+from arithmetic import NumpyArithmetic, MpmathArithmetic
+from rational_mapping import RationalHalfLineMap
 
 
 class basis_functions(object):
@@ -16,25 +18,24 @@ class basis_functions(object):
         self.__N = N
         self.__M = N+2 #for boundary conditions
         self.__L = L
-        self.__use_mpmath = use_mpmath
-        if self.__use_mpmath:
-            self.__mp = mpmath
-            self.__mp.mp.dps = prec
-        else:
-            self.__mp = np
         self._calc_domain = calc_domain
-        self._domain = (0,self.__mp.pi)
+        self.__configure_backend(use_mpmath, prec)
+
+    def __configure_backend(self, use_mpmath, prec=100):
+        self.__use_mpmath = bool(use_mpmath)
+        self.__mp = mpmath if self.__use_mpmath else np
+        if self.__use_mpmath:
+            self.__mp.mp.dps = prec
+        self._domain = (0, self.__mp.pi)
         self.__cos = np.vectorize(self.__mp.cos)
         self.__sin = np.vectorize(self.__mp.sin)
-        if self.__use_mpmath:
-            self.__atan = np.vectorize(self.__mp.atan)
-            self.__acos = np.vectorize(self.__mp.acos)
-        else:
-            self.__atan = np.vectorize(self.__mp.arctan)
-            self.__acos = np.vectorize(self.__mp.arccos)
+        self.__acos = np.vectorize(
+            self.__mp.acos if self.__use_mpmath else np.arccos
+        )
         self.__sqrt = np.vectorize(self.__mp.sqrt)
         self.__tan = np.vectorize(self.__mp.tan)
-
+        self.__half_line_key = None
+        self.__half_line_mapping = None
 
     #axilary functions
 
@@ -55,13 +56,10 @@ class basis_functions(object):
         self._calc_domain = domain
 
     def use_mpmath(self, prec = 100):
-        self.__use_mpmath = True
-        self.__mp = mpmath
-        self.__mp.mp.dps = prec
+        self.__configure_backend(True, prec)
 
     def use_numpy(self):
-        self.__use_mpmath = False
-        self.__mp = np
+        self.__configure_backend(False)
 
     def get_mpmath_ref(self):
         return self.__mp
@@ -112,32 +110,36 @@ class basis_functions(object):
 
         return value
 
-    # def from_infinity_map_to_t_old(self, x_in):
-    #     x = x_in.copy()
-    #     zero_at = np.argmin(x)
-    #     if x[zero_at]==0:
-    #         x[zero_at] = 1
-    #         print(x)
-    #         y = 1/x
-    #         val = 2*self.__atan(self.__sqrt(self.__L*y))
-    #         val[zero_at] = self.__mp.pi
-    #     else:
-    #         y = 1/x
-    #         val = 2*self.__atan(self.__sqrt(self.__L*y))
-    #     return val
+    def __half_line_map(self):
+        bits = self.__mp.mp.prec if self.__use_mpmath else 53
+        key = (self.__use_mpmath, self.__L, bits)
+        if key != self.__half_line_key:
+            if self.__use_mpmath:
+                arithmetic = MpmathArithmetic(self.__mp.mp.dps)
+                # Legacy collocation follows global precision, including changes
+                # that leave its rounded decimal-digit count unchanged.
+                arithmetic.context.prec = bits
+            else:
+                arithmetic = NumpyArithmetic()
+            self.__half_line_mapping = RationalHalfLineMap(arithmetic, L=self.__L)
+            self.__half_line_key = key
+        return self.__half_line_mapping
 
-    def from_infinity_map_to_t(self, x_in): #not good, but have to do it due to mpmath
-        x = x_in.copy()
-        xind = (np.float128(x) == 0)
-        for jl, xl in enumerate(x):
-            if xl == 0:
-                x[jl] = 1
-        y = 1/x
-        val = 2*self.__atan(self.__sqrt(self.__L*y))
-        for jl, fl in enumerate(xind):
-            if fl:
-                val[jl] = self.__mp.pi
-        return val
+    def __map_half_line(self, method_name, values):
+        mapping = self.__half_line_map()
+        method = getattr(mapping, method_name)
+        # Keep precision and complex values intact until scalar validation.
+        inputs = np.asarray(values, dtype=object)
+        dtype = object if self.__use_mpmath else np.float64
+        output = np.empty(inputs.shape, dtype=dtype)
+        for index in np.ndindex(inputs.shape):
+            value = method(inputs[index])
+            output[index] = self.__mp.mpf(value) if self.__use_mpmath else value
+        return output[()] if inputs.ndim == 0 else output
+
+    def from_infinity_map_to_t(self, x):
+        """Map physical scalars or arrays to angles, with the wall at pi."""
+        return self.__map_half_line("to_angle", x)
 
     def from_segment_map_to_t(self, x_in): #not good, but have to do it due to mpmath
         x0 = self._calc_domain[0]
@@ -155,18 +157,8 @@ class basis_functions(object):
         return t    
 
     def from_t_map_to_infinity(self, t):
-        ss = self.__sin(t/2)**2;
-        cs = self.__cos(t/2)**2;
-        inf_at = np.argmin(ss)
-        if self.__get_length(t)>1:
-            if ss[inf_at]==0:
-                ss[inf_at] = 1
-                cs[inf_at] = self.__mp.inf
-        else:
-            if ss == 0:
-                ss = 1
-                cs = self.__mp.inf
-        return self.__L*cs/ss;
+        """Map angles to physical coordinates, preserving array shape."""
+        return self.__map_half_line("from_angle", t)
 
     def from_t_map_to_segment(self, t):
         x0 = self._calc_domain[0]

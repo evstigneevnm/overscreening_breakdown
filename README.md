@@ -37,7 +37,7 @@ python -B -m unittest -v \
   test_solution_persistence test_scipy_solver test_l2_error \
   test_newton_globalization \
   test_arithmetic test_coefficients test_flux_problem test_physical_rhs \
-  test_collocation_adapter test_flux_collocation \
+  test_collocation_adapter test_flux_collocation test_collocation_mapping \
   test_rational_mapping test_galerkin_quadrature test_galerkin_basis \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
@@ -225,8 +225,19 @@ maps, bases, lifts and plans. The factory rebuilds from its original `L` and
 interface inputs on its next request; rebuild the basis as well. Decimal strings
 preserve raw geometry when raising precision; already rounded scalars cannot
 recover discarded digits. Tables require the same arithmetic owner and mapping
-length as their plan. The new map uses `y=-1` at the wall and `y=1` at infinity,
-independently of the legacy collocation trigonometric coordinates.
+length as their plan.
+
+`rational_mapping.RationalHalfLineMap` provides the shared half-line geometry.
+Its reference coordinate has `y=-1` at the wall and `y=1` at infinity.
+Collocation keeps its angular coordinate `t`, with `y=cos(t)`, `t=pi` at the
+wall and `t=0` at infinity. The map's `to_angle(x)` and `from_angle(t)` evaluate
+the half-angle formulas directly to retain small angles and large finite
+physical coordinates. Collocation's mapping wrappers accept scalars and arrays
+of any shape and preserve the input. They refresh their cached map when `L`,
+the arithmetic backend, or the exact mpmath bit precision changes. The existing
+collocation basis, derivative formulas, node ordering, and saved coefficient
+interpretation are retained. Its arithmetic still follows global mpmath
+precision, as described above.
 
 This stage provides quadrature and conforming spaces. Mixed residual/Jacobian
 assembly and a Galerkin solve remain the next stage.

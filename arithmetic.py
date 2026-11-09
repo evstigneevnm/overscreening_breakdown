@@ -51,6 +51,12 @@ class _RealArithmetic:
     def cos(self, value):
         return self.context.cos(value)
 
+    def atan2(self, y, x):
+        """Return the quadrant-aware angle in the owner's arithmetic."""
+        if self.use_mpmath:
+            return self.context.atan2(y, x)
+        return self.context.arctan2(y, x)
+
     @property
     def pi(self):
         return self.context.pi

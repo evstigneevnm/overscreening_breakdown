@@ -70,6 +70,70 @@ class RationalHalfLineMap:
             return self.arithmetic.inf
         return self._finite_result(self.L*((one+y)/(one-y)), "physical coordinate")
 
+    def to_angle(self, x):
+        """Return ``t`` in [0, pi] with ``x = L cot(t/2)**2``.
+
+        This evaluates the half-angle directly, without first rounding the
+        reference coordinate to an endpoint.  At finite precision an angle
+        extremely close to pi can still round to pi.
+        """
+        x = self.physical_coordinate(x)
+        arithmetic = self.arithmetic
+        zero, two = arithmetic.scalar(0), arithmetic.scalar(2)
+        pi = arithmetic.scalar(arithmetic.pi)
+        if x == zero:
+            return pi
+        if x == arithmetic.inf:
+            return zero
+        if x == self.L:
+            return pi/two
+        return two*arithmetic.atan2(arithmetic.sqrt(self.L), arithmetic.sqrt(x))
+
+    def from_angle(self, t):
+        """Return ``x = L cot(t/2)**2`` without squaring an extreme ratio.
+
+        The exact endpoint conventions are t=0 -> infinity and t=pi -> zero.
+        An interior angle whose physical value overflows the selected arithmetic
+        raises ``OverflowError``; representational underflow can yield zero.
+        """
+        self.check_precision()
+        arithmetic = self.arithmetic
+        t = arithmetic.scalar(t)
+        zero, two = arithmetic.scalar(0), arithmetic.scalar(2)
+        pi = arithmetic.scalar(arithmetic.pi)
+        if not arithmetic.isfinite(t) or not zero <= t <= pi:
+            raise ValueError("angle must be finite and in [0, pi]")
+        if t == zero:
+            return arithmetic.inf
+        if t == pi:
+            return zero
+        midpoint = pi/two
+        if t == midpoint:
+            return self.L
+        sine, cosine = arithmetic.sin(t/two), arithmetic.cos(t/two)
+        if not arithmetic.use_mpmath:
+            tiny = arithmetic.context.finfo(arithmetic.context.float64).tiny
+            root_tiny = arithmetic.sqrt(tiny)
+            if sine >= root_tiny and cosine >= root_tiny:
+                sine_squared, cosine_squared = sine*sine, cosine*cosine
+                if self.L >= 1 or cosine_squared >= tiny/self.L:
+                    # Preserve the legacy operation order when all intermediate
+                    # values are normal. One-ulp changes to collocation nodes
+                    # can affect finite-difference nonlinear solver decisions.
+                    return self._finite_result(
+                        (self.L*cosine_squared)/sine_squared,
+                        "physical coordinate",
+                    )
+        if t < midpoint:
+            ratio = sine/cosine
+            if ratio == zero:
+                raise OverflowError("angle half-ratio underflowed in the selected arithmetic")
+            value = (self.L/ratio)/ratio
+        else:
+            ratio = cosine/sine
+            value = (self.L*ratio)*ratio
+        return self._finite_result(value, "physical coordinate")
+
     def jacobian(self, y):
         """Return dx/dy; its value at the infinite endpoint is infinity."""
         y = self.reference_coordinate(y)
