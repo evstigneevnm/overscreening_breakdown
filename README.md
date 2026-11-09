@@ -39,6 +39,7 @@ python -B -m unittest -v \
   test_arithmetic test_coefficients test_flux_problem test_physical_rhs \
   test_collocation_adapter test_flux_collocation test_collocation_mapping \
   test_rational_mapping test_galerkin_quadrature test_galerkin_basis \
+  test_galerkin_assembly test_galerkin_manufactured_light \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
 ```
@@ -62,6 +63,12 @@ refinement, and agreement between methods/backends. The plotting smoke tests
 render PDFs and an IPython inline PNG. Spatial approximation error is checked
 separately from arithmetic precision; increasing decimal digits alone does not
 remove discretization error.
+
+The mixed Galerkin tests additionally cover physical weak-form assembly,
+Jacobian directional checks, scalar source homotopy, quadrature refinement, and
+small manufactured problems with constant, smooth-variable, and jump
+coefficients. Tiny exactly represented fields exercise the selected mpmath
+precisions without a spatial error floor.
 
 Plot files use temporary directories by default. Set `CI_ARTIFACT_DIR=ci-artifacts`
 to keep them. GitHub Actions retains the plots, test log, and installed dependency
@@ -135,8 +142,8 @@ which includes a third derivative, with second-order boundary data.
 The legacy collocation basis still uses global mpmath precision. Independent
 bound callback contexts do not make the entire collocation solver independent
 of that global setting. Legacy problem objects retain their existing path.
-Galerkin assembly is pending; the future fourth-order mixed solver will require
-`delta>0`.
+The mixed Galerkin assembly described below uses solver-owned arithmetic and
+requires `delta>0`.
 
 ### FluxProblem collocation example
 
@@ -191,7 +198,7 @@ plans, split at every supplied physical interface. The nodes are strictly
 inside each mapped panel, so neither interfaces nor infinity are sampled.
 `plan.weights` integrate in `dy`; `plan.physical_weights` include `dx/dy` and
 integrate in the physical measure `dx`. Use the same plan for every term of
-the future mixed system.
+the mixed system.
 
 ```python
 from arithmetic import MpmathArithmetic
@@ -239,8 +246,100 @@ collocation basis, derivative formulas, node ordering, and saved coefficient
 interpretation are retained. Its arithmetic still follows global mpmath
 precision, as described above.
 
-This stage provides quadrature and conforming spaces. Mixed residual/Jacobian
-assembly and a Galerkin solve remain the next stage.
+### Mixed Galerkin assembly
+
+`galerkin_assembly.GalerkinAssembly(problem, basis, plan)` binds an unbound
+`FluxProblem` or `overscreening_breakdown` description to the basis's arithmetic.
+It captures the physical parameters, boundary data, and coefficient description
+once. An already bound problem is rejected because its parameters may have
+been rounded at another precision. Basis and plan must share the same arithmetic
+owner, mapping length, and exact precision. The plan must have at least `N+1`
+points per panel and split every declared epsilon interface; extra splits are
+allowed.
+
+Write `epsilon_b=epsilon(0+)`, `e=epsilon/epsilon_b`, and
+`f_q(x,u)=exp(-q*x)*f(x,u)`. With all pairings integrated in physical `dx`, the
+assembled residual represents
+
+\[
+\begin{aligned}
+  (u',\phi')-(w,\phi)&=0,\\
+  \delta^2(ew',\psi')+((e-1)u',\psi')+(w,\psi)
+    +\epsilon_b^{-1}(f_q(\cdot,u),\psi)
+    -\delta^2q_b\psi(0)&=0.
+\end{aligned}
+\]
+
+Only the second equation is normalized by `epsilon_b`. The physical source is
+not divided by `delta**2`. The homotopy parameter `q` damps `f` and `f_u`
+identically and leaves the coefficient, lift, and natural wall load unchanged;
+`q=0` is the physical problem. No derivative of epsilon is needed.
+
+This assembly supports `[0,infinity)`, positive `delta`, and the wall data
+`u(0)=u_b`, `u'''(0)=q_b`, with no other wall conditions. An optional explicit
+zero value at infinity is accepted. The lift enforces the first condition;
+the second contributes the natural load `delta**2*q_b*psi(0)`. The independent
+field `w` has no imposed wall value or derivative row. Nontrivial constant,
+smooth-variable, and declared piecewise-smooth epsilon descriptions are accepted.
+
+Constant differential blocks, lift contributions, and the wall load are cached.
+`linear_matrix`, `lift_vector`, `boundary_vector`, and `affine_vector` return
+native copies. `linear_matrix` excludes the physical source; use
+`jacobian(coefficients, q)` for the complete derivative, including `f_u`.
+`residual(coefficients, q)` and `jacobian` use the coefficient order documented
+above and the Newton convention `DR*step=-R`.
+
+For example, the same physical problem used by the collocation example can
+supply a small mixed system:
+
+```python
+from arithmetic import MpmathArithmetic
+from examples.flux_problem_collocation import make_problem
+from galerkin import GalerkinBasis
+from galerkin_assembly import GalerkinAssembly
+from nonlinear_solver import solve_newton
+from quadrature import QuadratureFactory
+
+arithmetic = MpmathArithmetic(dps=50)
+basis = GalerkinBasis(N=4, arithmetic=arithmetic, L="1")
+plan = QuadratureFactory(arithmetic, L="1").plan(order=8)
+assembly = GalerkinAssembly(make_problem(), basis, plan)
+result = solve_newton(assembly.nonlinear_system(), atol="1e-35")
+u, w = basis.evaluate_fields(result.state, y=0, u_b="1")
+```
+
+`nonlinear_system(initial_guess=None)` supplies callbacks to the shared Newton
+driver. Its default mixed vector is zero, meaning `u=wall_lift` and `w=0`.
+An explicit guess must contain all `2*N-1` mixed coefficients. This low-level
+interface does not project the problem's scalar initial guess or construct
+`w` by differentiating it. Nonlinear trial overflow is reported to the shared
+driver for damping; invalid problem descriptions and unexpected callback errors
+propagate.
+
+`with_plan(new_plan)` and `refined(order_factor=2, subdivisions_factor=1)`
+create a new assembly while retaining the same bound physical snapshot and
+basis. The previous coefficient vector can initialize its Newton solve.
+`check_refinement(coefficients, atol=..., rtol=..., q=0)` compares the residual
+and analytic Jacobian on the current and refined plans at the same state and
+homotopy parameter. Its two thresholds are `atol+rtol*norm(refined_value)`;
+both comparisons must pass. Residuals use an **algebraic Euclidean norm** and
+Jacobians an **algebraic Frobenius norm**. These diagnostics are separate from
+physical field errors and nonlinear convergence, and are not rigorous
+quadrature error bounds. The assembly does not run an outer refinement loop.
+
+Run the complete [mixed example](examples/flux_problem_galerkin.py), including
+explicit quadrature refinement, from the repository root:
+
+```bash
+python -B -m examples.flux_problem_galerkin
+```
+
+It reuses a physical problem with `epsilon(x)=1+1/(1+x)` for NumPy and
+50-digit mpmath solves, reporting Newton convergence, quadrature convergence,
+and sampled errors in both independent fields separately.
+
+A common solver dispatcher, physical error norms, and two-field saved solutions
+remain for the next stage. Existing collocation persistence is unchanged.
 
 #### For manufactured glabal tests run the following from your local folder
 
