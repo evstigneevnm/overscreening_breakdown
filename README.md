@@ -38,6 +38,7 @@ python -B -m unittest -v \
   test_newton_globalization \
   test_arithmetic test_coefficients test_flux_problem test_physical_rhs \
   test_collocation_adapter test_flux_collocation \
+  test_rational_mapping test_galerkin_quadrature test_galerkin_basis \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
 ```
@@ -166,6 +167,69 @@ solver = solve_nonlinear_problem(
 )
 coefficients = solver.solve_problem()
 ```
+
+### Galerkin bases and quadrature
+
+`galerkin.GalerkinBasis` supplies conforming half-line spaces beside the
+collocation code. With `y=(x-L)/(x+L)`, it uses
+`V_N=(1-y**2) P_(N-2)` and `Q_N=(1-y) P_(N-1)`, expressed in Chebyshev
+polynomials. Here `N>=2` is the maximum polynomial degree. The mixed vector
+contains `N-1` coefficients for `u-wall_lift`, followed by `N` independent
+coefficients for `w`: **`2*N-1` unknowns**. This differs from collocation's
+meaning of `N`; equal `N` does not mean equal unknown counts.
+
+Basis and lift methods `v`, `q`, `v_dx`, `q_dx`, `value` and `dx` take a
+reference coordinate `y` in `[-1,1]`; `_dx`/`dx` returns a physical derivative.
+The wall lift is `u_b*L/(x+L)`. Its `at(x)` and `derivative_at(x)` methods take
+physical coordinates and retain the decaying tail when a large finite `x`
+would round to `y=1`. Both fields vanish at infinity; only the first field's
+homogeneous basis vanishes at the wall. The mixed second field is evaluated
+independently, rather than defined by differentiating the first field.
+
+`quadrature.QuadratureFactory` creates positive composite Gauss–Legendre
+plans, split at every supplied physical interface. The nodes are strictly
+inside each mapped panel, so neither interfaces nor infinity are sampled.
+`plan.weights` integrate in `dy`; `plan.physical_weights` include `dx/dy` and
+integrate in the physical measure `dx`. Use the same plan for every term of
+the future mixed system.
+
+```python
+from arithmetic import MpmathArithmetic
+from galerkin import GalerkinBasis
+from quadrature import QuadratureFactory
+
+arithmetic = MpmathArithmetic(dps=50)
+basis = GalerkinBasis(N=4, arithmetic=arithmetic, L="1")
+factory = QuadratureFactory(arithmetic, L="1", interfaces=("1",))
+plan = factory.plan(order=basis.N + 1)
+table = basis.tabulate(plan)
+lift = basis.lift("1")
+integral = plan.integrate(lambda x: 1/(1+x)**2)  # physical integral: 1
+check = plan.check_refinement(
+    lambda x: 1/(1+x)**2, atol="1e-40", rtol="1e-40",
+)
+```
+
+`order` is the number of Gauss points per mapped panel; `subdivisions` splits
+each interface interval uniformly in `y`. At least `N+1` Gauss points per
+panel integrate these spaces' physical mass and derivative Gram forms exactly
+in exact arithmetic. Variable coefficients and nonlinear loads generally need
+additional quadrature refinement. `check_refinement` compares a fixed
+integrand on the coarse and refined plans against `atol+rtol*abs(refined)`;
+the difference is a diagnostic, not a rigorous error bound or proof of
+nonlinear convergence. Interfaces must be supplied explicitly.
+
+Each factory caches a bounded number of plans and Gauss rules for its arithmetic
+owner and exact bit precision. Changing that context's precision invalidates old
+maps, bases, lifts and plans. The factory rebuilds from its original `L` and
+interface inputs on its next request; rebuild the basis as well. Decimal strings
+preserve raw geometry when raising precision; already rounded scalars cannot
+recover discarded digits. Tables require the same arithmetic owner and mapping
+length as their plan. The new map uses `y=-1` at the wall and `y=1` at infinity,
+independently of the legacy collocation trigonometric coordinates.
+
+This stage provides quadrature and conforming spaces. Mixed residual/Jacobian
+assembly and a Galerkin solve remain the next stage.
 
 #### For manufactured glabal tests run the following from your local folder
 
