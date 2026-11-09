@@ -4,6 +4,7 @@ Run with ``python -m unittest test_scipy_solver``.
 """
 
 from contextlib import redirect_stdout
+from dataclasses import replace
 import io
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from overscreening_breakdown import (
     overscreening_breakdown_segment,
 )
 from spectral1d import solve_nonlinear_problem
+from nonlinear_solver import LinearSolveError, solve_newton
 
 
 class ScipySolverTests(unittest.TestCase):
@@ -27,7 +29,8 @@ class ScipySolverTests(unittest.TestCase):
         redirect.__enter__()
         self.addCleanup(redirect.__exit__, None, None, None)
 
-    def solver(self, method="nonlin_solve", segment=False, use_mpmath=False):
+    def solver(self, method="nonlin_solve", segment=False, use_mpmath=False,
+               use_globalization=False):
         problem = (
             overscreening_breakdown_segment() if segment else overscreening_breakdown()
         )
@@ -38,7 +41,7 @@ class ScipySolverTests(unittest.TestCase):
             L=2,
             tolerance=1e-10,
             use_method=method,
-            use_globalization=False,
+            use_globalization=use_globalization,
             use_mpmath=use_mpmath,
             prec=50,
         )
@@ -90,6 +93,85 @@ class ScipySolverTests(unittest.TestCase):
 
     def test_legacy_method_solves_finite_segment_problem(self):
         self.check_numerical_solution(segment=True)
+
+    def test_newton_reuses_a_converged_initial_solution_without_iteration(self):
+        for use_mpmath in (False, True):
+            with self.subTest(mpmath=use_mpmath):
+                solver = self.solver(method="newton", use_mpmath=use_mpmath)
+                coefficients = solver.solve_problem()
+                restarted = solver.solve_problem(c0=coefficients)
+                result = solver.get_newton_result()
+                self.assertTrue(solver.is_converged())
+                self.assertTrue(result.converged)
+                self.assertEqual(result.iterations, 0)
+                self.assertEqual(result.homotopy, 0)
+                self.assertLess(solver.residual_L2_norm(restarted), 1e-9)
+
+    def test_newton_continuation_preserves_wall_data_and_solves_physical_problem(self):
+        for use_mpmath in (False, True):
+            with self.subTest(mpmath=use_mpmath):
+                solver = self.solver(
+                    method="newton", use_mpmath=use_mpmath,
+                    use_globalization=True,
+                )
+                restarts = []
+
+                def force_one_linear_failure(system, **options):
+                    native_solve = system.solve_linear
+                    native_restart = system.restart
+                    failed = False
+
+                    def solve_linear(matrix, rhs):
+                        nonlocal failed
+                        if not failed:
+                            failed = True
+                            raise LinearSolveError("exercise continuation")
+                        return native_solve(matrix, rhs)
+
+                    def restart(state, q):
+                        coefficients = native_restart(state, q)
+                        restarts.append(coefficients.copy())
+                        return coefficients
+
+                    # Force recovery without relying on a fragile difficult
+                    # spatial problem; all later systems use the real assembly.
+                    options["homotopy_cutoff"] = "0.1"
+                    return solve_newton(
+                        replace(system, solve_linear=solve_linear, restart=restart),
+                        **options,
+                    )
+
+                with patch("spectral1d.solve_newton", side_effect=force_one_linear_failure):
+                    coefficients = solver.solve_problem()
+                result = solver.get_newton_result()
+                self.assertTrue(solver.is_converged())
+                self.assertEqual(result.homotopy, 0)
+                self.assertEqual(result.stages[-1].homotopy, 0)
+                self.assertTrue(result.stages[-1].converged)
+                self.assertTrue(any(stage.homotopy > 0 for stage in result.stages))
+                self.assertTrue(restarts)
+                self.assertLess(solver.residual_L2_norm(coefficients), 1e-9)
+                for restart in restarts:
+                    wall_value = np.asarray(solver.obtain_solution_in_domain(
+                        restart, np.array([0.0])
+                    )).item()
+                    self.assertAlmostEqual(wall_value, 1, places=12)
+                    third_derivative = sum(
+                        solver.psi_with_derivative_value_at_right(k, 3) * value
+                        for k, value in enumerate(restart)
+                    )
+                    self.assertAlmostEqual(third_derivative, 0, places=10)
+
+    def test_newton_diagnostics_clear_when_switching_to_scipy(self):
+        solver = self.solver(method="newton")
+        coefficients = solver.solve_problem()
+        self.assertIsNotNone(solver.get_newton_result())
+        solver.set_method("root")
+        with patch("spectral1d.optimize.root", return_value=OptimizeResult(
+            x=coefficients, success=True,
+        )):
+            solver.solve_problem()
+        self.assertIsNone(solver.get_newton_result())
 
     def test_success_returns_scipy_solution_and_sets_convergence(self):
         for method in ("root", "root_no_jac", "nonlin_solve"):

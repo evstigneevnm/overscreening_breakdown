@@ -35,6 +35,7 @@ Run the same suite locally from the repository root:
 MPLBACKEND=Agg OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python -B -m unittest -v \
   test_solution_persistence test_scipy_solver test_l2_error \
+  test_newton_globalization \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
 ```
@@ -43,6 +44,14 @@ Set `MPMATH_NOGMPY=1` before starting Python to test the pure Python backend.
 For the gmpy backend, install `gmpy2` and leave `MPMATH_NOGMPY` unset (an empty
 value still disables gmpy). CI installs the same
 [requirements.txt](requirements.txt) used for local environments.
+
+The collocation Newton method uses the shared driver in `nonlinear_solver.py`.
+It retains damped steps and homotopy continuation, with convergence verified at
+the physical parameter `q=0`. `solver.get_newton_result()` exposes the accepted
+step history, continuation stages, stopping targets, and convergence/failure
+reason. The existing coefficient return value and `is_converged()` remain
+available. The legacy `tolerance` keeps its existing RMS residual scaling;
+the shared driver's direct interface has separate `atol` and `rtol` controls.
 
 The light manufactured tests reuse the existing analytic problems with small,
 fixed resolutions. They check residuals, boundary conditions, analytic error,

@@ -66,6 +66,7 @@ jobs:
           # Explicit modules keep the original heavy sweeps out of CI.
           python -B -m unittest -v \
             test_solution_persistence test_scipy_solver test_l2_error \
+            test_newton_globalization \
             test_manufactured_linear_light test_manufactured_nonlinear_light \
             test_plotting_light \
             2>&1 | tee "$CI_ARTIFACT_DIR/tests.log"

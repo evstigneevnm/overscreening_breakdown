@@ -7,6 +7,8 @@ from scipy.optimize import minimize
 from scipy.integrate import ode
 from inspect import isfunction, isclass
 
+from nonlinear_solver import LinearSolveError, NonlinearSystem, solve_newton
+
 
 class basis_functions(object):
     def __init__(self, N, L = 1, use_mpmath = False, prec = 100, calc_domain = [0, np.inf]):
@@ -993,6 +995,7 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__globalization = 0
         self.__base_solution = None
         self.__converged = False
+        self.__newton_result = None
         self.__use_adjoint_opimization = use_adjoint_opimization
         self.__use_mpmath = super().is_using_mpmath()
         self.__mp_ref = super().get_mpmath_ref()
@@ -1056,8 +1059,8 @@ class solve_nonlinear_problem(collocation_discretization):
         N = self.linear_functional_linearization_boundary(N)
         return N
 
-    def __residual_operator(self, c):
-        rhs = self.__right_hand_side(c, self.__globalization)
+    def __residual_operator(self, c, q = None):
+        rhs = self.__right_hand_side(c, self.__globalization if q is None else q)
         if self.__use_mpmath:
             lhs = self.__S*c#self.__dot(self.__S, c)
         else:
@@ -1065,8 +1068,8 @@ class solve_nonlinear_problem(collocation_discretization):
         res = rhs-lhs
         return res
         
-    def __linearization_operator(self, c):
-        N = self.__right_hand_side_linearization(c, self.__globalization)
+    def __linearization_operator(self, c, q = None):
+        N = self.__right_hand_side_linearization(c, self.__globalization if q is None else q)
         A = -(self.__S-N)
         return A
 
@@ -1104,6 +1107,7 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def solve_problem(self, c0 = None):
         self.__converged = False
+        self.__newton_result = None
         if self.__problem==None:
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
         if self.__use_mpmath:
@@ -1162,69 +1166,53 @@ class solve_nonlinear_problem(collocation_discretization):
             converged = res.success
             c = res.x;
         elif self.__use_method == "newton":
-            residual_norm_0 = self.__sqrt(self._M)#self.residual_L2_norm(c_ref)
-            residual_norm = residual_norm_0
-            iterations = 0
-            print("newton: relative target tolerance = {:.6e}".format(self.__tolerance*np.float64(residual_norm_0)))
-            for j_homotopy in range(0,100):
-                c_save = c.copy()
-                while residual_norm>self.__tolerance*residual_norm_0 and iterations<self.__total_iterations: 
-                    iterations = iterations + 1
-                    A = -self.__linearization_operator(c)
-                    b = self.__residual_operator(c)
-                    dc = self.solve(A, b)# np.linalg.solve(A, b)
-                    w = 1
-                    converged = True
-                    residual_norm_new = residual_norm*(1+1/10)
-                    while residual_norm_new>=residual_norm:
-                        c_new = c + w*dc
-                        residual_norm_new = self.residual_L2_norm(c_new)
-                        w = w/2
-                        if w<1.0e-10 or not self.__mp_ref.isfinite(residual_norm_new):
-                            converged = False
-                            break
-                    c = c_new
-                    if not converged:
-                        print("newton: failed to converge for old norm: {:.6e}".format(np.float64(residual_norm)), "with new norm: {:.6e}".format(np.float64(residual_norm_new)), " with weight: {:.6e}".format(np.float64(w)) )
-                        break
-                    residual_norm = residual_norm_new
-                    print("newton: iteration ", iterations, ", residual norm {:.6e}".format(np.float64(residual_norm)), ", weight = {:.6e}".format(np.float64(w*2)) )
-                    if self.__visualize:
-                        t = np.arange(0, np.pi, 0.01)
-                        u = self.obtain_solution_in_basis(c, t)
-                        plt.plot(t, u, label = iterations)
+            scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
 
+            def solve_linear(matrix, rhs):
+                try:
+                    return self.solve(matrix, rhs)
+                except (np.linalg.LinAlgError, ZeroDivisionError) as error:
+                    raise LinearSolveError(str(error)) from error
+
+            def iteration_callback(coefficients, iteration):
+                print("newton: iteration", iteration.iteration,
+                      ", residual norm", self.__format_scalar(iteration.residual_norm),
+                      ", weight =", self.__format_scalar(iteration.step),
+                      ", homotopy =", self.__format_scalar(iteration.homotopy))
                 if self.__visualize:
-                    plt.legend()
-                    plt.show()
+                    t = np.arange(0, np.pi, 0.01)
+                    u = self.obtain_solution_in_basis(coefficients, t)
+                    plt.plot(t, u, label=iteration.iteration)
 
-                if iterations>=self.__total_iterations:
-                    converged = False
-
-                if not converged or not self.__mp_ref.isfinite(residual_norm):
-                    iterations = 0
-                    residual_norm = residual_norm_0
-                    if self.__globalization == 0:
-                        self.__globalization = self.__globalization_init
-                    c = 0*c_save.copy() #reset data
-
-                    self.__globalization = self.__globalization*1.25
-                    if not self.__use_globalization:
-                      break;
-                else:
-                    iterations = 0
-                    residual_norm = residual_norm_0
-                    if self.__globalization == 0.0:
-                        break
-                    elif self.__globalization < 1.0e-11:
-                        self.__globalization = 0.0
-                    else:
-                        self.__globalization = self.__globalization*0.5
-                        
-
-                print("newton: residual norm = {:.6e}".format(np.float64(self.residual_L2_norm(c))), " with homotopy = {:.6e}".format(np.float64(self.__globalization)))
-                if self.__globalization == 0.0:
-                    break                
+            system = NonlinearSystem(
+                residual=self.__residual_operator,
+                jacobian=self.__linearization_operator,
+                solve_linear=solve_linear,
+                residual_norm=lambda residual: self.__norm(residual)/self.__sqrt(self._M),
+                initial_guess=lambda: c.copy(),
+                scalar=scalar,
+                isfinite=self.__mp_ref.isfinite,
+                # Expansion applies the wall conditions; zeroing all coefficients
+                # would erase nonzero essential data during continuation.
+                restart=lambda state, q: c_ref.copy(),
+            )
+            # Preserve the historical RMS stopping threshold exposed by tolerance.
+            target = scalar(self.__tolerance)*self.__sqrt(self._M)
+            print("newton: target residual norm =", self.__format_scalar(target))
+            self.__newton_result = solve_newton(
+                system,
+                atol=target,
+                rtol=0,
+                max_iterations=self.__total_iterations,
+                use_globalization=self.__use_globalization,
+                globalization_init=self.__globalization_init,
+                callback=iteration_callback,
+            )
+            c = self.__newton_result.state
+            converged = self.__newton_result.converged
+            if self.__visualize:
+                plt.legend()
+                plt.show()
 
         elif self.__use_method == "print":
             k = np.arange(0, self._M)
@@ -1235,9 +1223,9 @@ class solve_nonlinear_problem(collocation_discretization):
             print(self.dddpsi(10, j[self._M-1] ))
 
         if converged:
-            print("converged with norm = {:.6e}".format(np.float64(self.residual_L2_norm(c) ) ))
+            print("converged with norm =", self.__format_scalar(self.residual_L2_norm(c)))
         else:
-            print("failed to converge with norm = {:.6e}".format(np.float64(self.residual_L2_norm(c) ) ))
+            print("failed to converge with norm =", self.__format_scalar(self.residual_L2_norm(c)))
             
         self.__current_solution = c
         self.__converged = converged
@@ -1245,6 +1233,15 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def is_converged(self):
         return self.__converged
+
+    def get_newton_result(self):
+        """Return Newton stage/step diagnostics, or None for other methods."""
+        return self.__newton_result
+
+    def __format_scalar(self, value):
+        if self.__use_mpmath:
+            return self.__mp_ref.nstr(value, 8)
+        return "{:.6e}".format(value)
 
     def obtain_solution_in_domain(self, c, x):
         return self.solution_in_domain(c, x)
