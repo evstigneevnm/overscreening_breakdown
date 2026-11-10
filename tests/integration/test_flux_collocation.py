@@ -236,17 +236,18 @@ class FluxCollocationTests(unittest.TestCase):
         self.assertEqual(high.physical_rhs("0.2", "0.3"), high_source)
 
     def test_runnable_example_reuses_one_problem_in_both_arithmetics(self):
-        from examples.flux_problem_collocation import make_problem, solve_example
+        from examples.collocation import make_case, run
+        from examples._common import sampled_error
 
-        problem = make_problem()
+        case = make_case()
+        problem = case.make_problem()
         before = (problem.delta, problem.epsilon, problem.domain,
                   problem.boundary_conditions, problem.f, problem.f_u,
                   problem.initial_guess)
         for use_mpmath in (False, True):
             with self.subTest(mpmath=use_mpmath):
-                solver, coefficients, error = solve_example(
-                    problem, use_mpmath=use_mpmath, precision=50,
-                )
+                solver = run(problem=problem, use_mpmath=use_mpmath, precision=50)
+                error = sampled_error(solver, case)
                 self.assertTrue(solver.converged)
                 bound = mp.mpf("1e-30") if use_mpmath else 1e-8
                 self.assertLess(error, bound)

@@ -15,7 +15,7 @@ from unittest.mock import patch
 import numpy as np
 
 from overscreening_breakdown import load_solution
-from examples import collocation, galerkin, restart_and_projection, variable_epsilon
+from examples import bsk, collocation, galerkin, restart_and_projection, variable_epsilon
 from examples._common import sampled_error
 
 
@@ -23,6 +23,23 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class UserExampleTests(unittest.TestCase):
+    def test_immutable_bsk_example_supports_both_solvers_and_arithmetics(self):
+        problem = bsk.make_problem()
+        for solver in ("collocation", "galerkin"):
+            for use_mpmath in (False, True):
+                with self.subTest(solver=solver, mpmath=use_mpmath):
+                    solution = bsk.run(problem=problem, solver=solver,
+                                       use_mpmath=use_mpmath, precision=50)
+                    self.assertTrue(solution.converged)
+                    self.assertTrue(solution.nonlinear_converged)
+                    self.assertEqual(solution.quadrature_converged,
+                                     True if solver == "galerkin" else None)
+                    self.assertEqual(solution.newton_result.homotopy, 0)
+                    arithmetic = solution.arithmetic
+                    self.assertLess(abs(solution.u(0)-arithmetic.scalar("0.05")),
+                                    arithmetic.scalar("1e-30" if use_mpmath else "1e-8"))
+                    self.assertIsInstance(solution.u(1), type(arithmetic.scalar(0)))
+
     def test_bounded_examples_return_native_solutions_for_numpy_and_mpmath(self):
         for module in (collocation, galerkin, variable_epsilon):
             for use_mpmath in (False, True):
@@ -72,7 +89,7 @@ class UserExampleTests(unittest.TestCase):
     def test_all_user_scripts_have_module_and_off_repository_help(self):
         environment = os.environ.copy()
         environment.pop("PYTHONPATH", None)
-        for name in ("collocation", "galerkin", "variable_epsilon", "restart_and_projection"):
+        for name in ("collocation", "galerkin", "variable_epsilon", "restart_and_projection", "bsk"):
             with tempfile.TemporaryDirectory(dir="/tmp") as directory:
                 commands = (([sys.executable, "-B", str(ROOT/"examples"/(name+".py")), "--help"], directory),
                             ([sys.executable, "-B", "-m", "examples."+name, "--help"], str(ROOT)))
@@ -127,7 +144,10 @@ class UserExampleTests(unittest.TestCase):
                 self.assertNotIn("%cd", source)
                 self.assertNotIn("RcParams._get", source)
                 self.assertNotIn("from spectral1d import", source)
+                self.assertNotIn("from overscreening_breakdown import overscreening_breakdown", source)
                 self.assertIn("overscreening_breakdown", source)
+                if path.name != "examples_problems_updated_testing.ipynb":
+                    self.assertIn("BSKProblem", source)
         execution = json.loads((ROOT/"examples"/"notebooks"/"execution_example.ipynb").read_text())
         setup = next("".join(cell["source"]) for cell in execution["cells"]
                      if cell["cell_type"] == "code" and "def run_collocation(" in "".join(cell["source"]))
@@ -137,6 +157,27 @@ class UserExampleTests(unittest.TestCase):
                 exec(compile("\n".join(line for line in setup.splitlines()
                                        if not line.lstrip().startswith("%")),
                              "execution_example.ipynb setup", "exec"), namespace)
+            # Construct the notebook descriptions without running their N=100
+            # solves. The old initial defaults and later explicit values differ.
+            exec("".join(execution["cells"][3]["source"]), namespace)
+            default = namespace["problem"]
+            arithmetic = namespace["MpmathArithmetic"](50)
+            self.assertEqual(arithmetic.scalar(default.sigma), 10)
+            self.assertEqual(arithmetic.scalar(default.mu), 0)
+            self.assertEqual(arithmetic.scalar(default.gamma), arithmetic.scalar("0.5"))
+            self.assertEqual(default.bind(arithmetic).delta, 50)
+            self.assertEqual(default.bind(arithmetic).boundary_conditions[0][0], 100)
+            exec("".join(execution["cells"][6]["source"]), namespace)
+            configured = namespace["problem"].bind(arithmetic)
+            self.assertEqual(configured.delta, 10)
+            self.assertEqual(configured.boundary_conditions[0][0], 1)
+            self.assertIsInstance(configured.base_solution(1), type(arithmetic.scalar(0)))
+            segment = json.loads((ROOT/"examples"/"notebooks"/"segment_execution_example.ipynb").read_text())
+            exec("".join(segment["cells"][3]["source"]), namespace)
+            finite = namespace["problem"].bind(arithmetic)
+            self.assertEqual(finite.domain, (0, 50))
+            self.assertEqual(finite.boundary_conditions[0][0], 100)
+            self.assertEqual(finite.boundary_conditions[1][:2], (0, 0))
             problem = collocation.make_case().make_problem()
             source = namespace["run_collocation"](problem, 8, L=1, tolerance="1e-35",
                                                    use_mpmath=True, precision=50)

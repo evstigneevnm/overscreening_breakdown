@@ -23,9 +23,13 @@ python -B -m examples.variable_epsilon --backend mpmath --precision 50
 
 `requirements.txt` selects the validated numerical, gmpy, and notebook versions
 for the interpreter. Minimal installs and optional extras are described in the
-[installation guide](docs/installation.md). No public package publication is
+[installation and build guide](INSTALL.md). No public package publication is
 assumed. Open the notebooks under [examples/notebooks](examples/notebooks)
 using your existing Jupyter interface.
+
+The public interface now uses canonical package imports and an immutable
+`BSKProblem`. Old flat imports and lowercase BSK entry points have been removed.
+See the [breaking migration guide](docs/public_api.md) for replacements.
 
 A manufactured physical problem can be shared by the two solvers when its
 coefficient and boundary data permit both:
@@ -50,6 +54,7 @@ Newton and quadrature checks.
 - [Numerical methods, problem definitions, and manufactured catalog](docs/numerical_methods.md)
 - [Saved solutions, explicit projection, and restart compatibility](docs/saved_solutions.md)
 - [Installation, development, testing, and distribution builds](docs/installation.md)
+- [Public API and breaking import migration](docs/public_api.md)
 
 ## Layout and migration stages
 
@@ -59,7 +64,6 @@ src/overscreening_breakdown/   Installed numerical package
     collocation/             Discretization, adapter, and evaluable solution
     galerkin/                Conforming basis, mixed assembly, solution
     manufactured/            Reusable native cases and explicit legacy definitions
-src/*.py                     Compatibility aliases for original imports
 tests/                       Unit, integration, manufactured, plotting, legacy
 examples/                    Bounded runnable examples and notebooks/
 benchmarks/                  Opt-in studies with JSON/CSV results
@@ -67,12 +71,12 @@ experiments/                 Explicit legacy plots and manual explorations
 docs/                        Numerical, persistence, and installation guides
 ```
 
-The first stage packaged the implementation and organized tests. This second
-stage migrates manufactured definitions, examples, notebooks, and benchmark
-runners to the canonical package and common solver. The third stage, a public
-interface change, remains separate. Historical imports such as `spectral1d`
-and the original BSK class import remain available through compatibility
-aliases. Legacy definitions and saved-data readers are retained explicitly.
+The three migration stages are complete: package/test organization,
+manufactured cases/examples/benchmarks, and the public interface cleanup.
+Use `BSKProblem`, `FluxProblem`, `solve`, and the typed solution APIs from
+`overscreening_breakdown`. Canonical low-level legacy definitions and numerical
+saved-data readers remain available for the experiments that need them;
+the old import aliases and Python example wrapper modules are removed.
 The catalog documents native-arithmetic corrections and the common homotopy;
 unsupported equations are not silently reinterpreted as flux problems.
 

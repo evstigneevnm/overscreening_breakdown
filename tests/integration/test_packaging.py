@@ -1,115 +1,124 @@
-"""Installed-package behavior and compatibility of historical import paths."""
+"""Installed canonical API, lazy imports, and the breaking namespace cleanup."""
 
 import importlib
+import importlib.util
 from importlib import metadata
 import json
 import os
 from pathlib import Path
-import pickle
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
-from unittest.mock import patch
 
 
-MODULE_ALIASES = {
-    "arithmetic": "arithmetic",
-    "coefficients": "coefficients",
-    "nonlinear_solver": "nonlinear_solver",
-    "rational_mapping": "rational_mapping",
-    "quadrature": "quadrature",
-    "solvers": "solvers",
-    "solution_io": "solution_io",
-    "projection": "projection",
-    "physical_problem": "problems.flux",
-    "spectral1d": "collocation.spectral1d",
-    "collocation_problem": "collocation.adapter",
-    "collocation_solution": "collocation.solution",
-    "galerkin": "galerkin.basis",
-    "galerkin_assembly": "galerkin.assembly",
-    "solutions": "galerkin.solution",
-    "solution_plotting": "plotting",
-    "manufactured_problems": "manufactured.legacy_problems",
-    "manufactured_solutions_solver": "manufactured.legacy_runner",
-    "problems_for_updated_testing": "manufactured.legacy_additional",
-    "nonlinear_problem_on_segment": "problems.segment",
+PUBLIC_EXPORTS = {
+    "BSKProblem": ("problems.bsk_problem", "BSKProblem"),
+    "FluxProblem": ("problems.flux", "FluxProblem"),
+    "BoundFluxProblem": ("problems.flux", "BoundFluxProblem"),
+    "Coefficient": ("coefficients", "Coefficient"),
+    "ConstantCoefficient": ("coefficients", "ConstantCoefficient"),
+    "NumpyArithmetic": ("arithmetic", "NumpyArithmetic"),
+    "MpmathArithmetic": ("arithmetic", "MpmathArithmetic"),
+    "QuadratureFactory": ("quadrature", "QuadratureFactory"),
+    "QuadraturePlan": ("quadrature", "QuadraturePlan"),
+    "solve": ("solvers", "solve"),
+    "load_solution": ("solvers", "load_solution"),
+    "load_legacy_collocation": ("solvers", "load_legacy_collocation"),
+    "project_collocation": ("projection", "project_collocation"),
+    "save_solution": ("solution_io", "save_solution"),
+    "CollocationSolution": ("collocation.solution", "CollocationSolution"),
+    "GalerkinSolution": ("galerkin.solution", "GalerkinSolution"),
+    "plot_fields": ("plotting", "plot_fields"),
+    "plot_coefficients": ("plotting", "plot_coefficients"),
+    "physical_l2_norm": ("norms", "physical_l2_norm"),
+    "physical_h1_norm": ("norms", "physical_h1_norm"),
+    "physical_l2_error": ("norms", "physical_l2_error"),
+    "physical_h1_error": ("norms", "physical_h1_error"),
 }
+
+REMOVED_MODULES = (
+    "arithmetic", "coefficients", "nonlinear_solver", "rational_mapping", "quadrature",
+    "physical_problem", "spectral1d", "collocation_problem", "collocation_solution",
+    "galerkin", "galerkin_assembly", "solutions", "solution_io", "projection",
+    "solution_plotting", "solvers", "manufactured_problems", "manufactured_solutions_solver",
+    "problems_for_updated_testing", "nonlinear_problem_on_segment",
+)
 
 
 class PackagingTests(unittest.TestCase):
-    def test_historical_modules_share_canonical_runtime_objects(self):
+    def test_public_exports_are_the_canonical_runtime_objects(self):
         package = importlib.import_module("overscreening_breakdown")
-        package_directory = Path(package.__file__).resolve().parent
-        for old_name, relative_name in MODULE_ALIASES.items():
-            with self.subTest(module=old_name):
-                historical = importlib.import_module(old_name)
-                canonical = importlib.import_module("overscreening_breakdown."+relative_name)
-                self.assertIs(historical, canonical)
-                self.assertIn(package_directory, Path(canonical.__file__).resolve().parents)
-        from overscreening_breakdown.problems.bsk import (
-            overscreening_breakdown, overscreening_breakdown_segment,
-        )
-        self.assertIs(package.overscreening_breakdown, overscreening_breakdown)
-        self.assertIs(package.overscreening_breakdown_segment, overscreening_breakdown_segment)
+        for name, (module, attribute) in PUBLIC_EXPORTS.items():
+            with self.subTest(name=name):
+                canonical = importlib.import_module("overscreening_breakdown."+module)
+                self.assertIs(getattr(package, name), getattr(canonical, attribute))
+                self.assertIn(name, package.__all__)
+                self.assertIn(name, dir(package))
+        for removed in ("overscreening_breakdown", "overscreening_breakdown_segment"):
+            with self.subTest(removed=removed):
+                self.assertNotIn(removed, package.__all__)
+                with self.assertRaises(AttributeError):
+                    getattr(package, removed)
 
-    def test_patching_historical_module_changes_the_canonical_solver(self):
-        historical = importlib.import_module("spectral1d")
-        canonical = importlib.import_module("overscreening_breakdown.collocation.spectral1d")
-        original = canonical.solve_newton
-        replacement = object()
-        with patch("spectral1d.solve_newton", replacement):
-            self.assertIs(canonical.solve_newton, replacement)
-            self.assertIs(historical.solve_nonlinear_problem, canonical.solve_nonlinear_problem)
-        self.assertIs(canonical.solve_newton, original)
+    def test_importing_the_package_is_lazy(self):
+        script = textwrap.dedent("""
+            import sys
+            import overscreening_breakdown as package
+            for dependency in ('numpy', 'mpmath', 'scipy', 'matplotlib'):
+                assert dependency not in sys.modules, dependency
+            assert 'BSKProblem' in dir(package)
+            _ = package.FluxProblem
+            assert 'matplotlib.pyplot' not in sys.modules
+            assert 'overscreening_breakdown.collocation.spectral1d' not in sys.modules
+        """)
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", script], cwd="/tmp",
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 
-    def test_historical_pickle_global_names_still_resolve(self):
-        # Existing solution files contain numerical data. Also preserve class
-        # lookup for user-created trusted pickles using the old module names.
-        names = (
-            ("spectral1d", "basis_functions", "collocation.spectral1d"),
-            ("spectral1d", "solve_nonlinear_problem", "collocation.spectral1d"),
-            ("overscreening_breakdown", "overscreening_breakdown", "problems.bsk"),
-            ("overscreening_breakdown", "overscreening_breakdown_segment", "problems.bsk"),
-            ("manufactured_problems", "problem_1", "manufactured.legacy_problems"),
-            ("nonlinear_problem_on_segment", "nonlinear_problem_on_segment", "problems.segment"),
-        )
-        for old_module, name, new_module in names:
-            with self.subTest(module=old_module, name=name):
-                payload = "c{}\n{}\n.".format(old_module, name).encode("ascii")
-                expected = getattr(importlib.import_module("overscreening_breakdown."+new_module), name)
-                self.assertIs(pickle.loads(payload), expected)
+    def test_distribution_does_not_install_the_removed_flat_modules(self):
+        distribution = metadata.distribution("overscreening-breakdown")
+        installed = {str(path) for path in distribution.files or ()}
+        self.assertTrue(installed)
+        for name in REMOVED_MODULES:
+            with self.subTest(module=name):
+                self.assertNotIn(name+".py", installed)
+                # Other distributions can independently own a generic name.
+                # This project must not supply it from either its src tree or
+                # its canonical package directory.
+                spec = importlib.util.find_spec(name)
+                if spec is not None and spec.origin:
+                    origin = Path(spec.origin).resolve()
+                    source = Path(__file__).resolve().parents[2]/"src"
+                    self.assertNotEqual(origin, source/(name+".py"))
+                    self.assertNotIn("overscreening_breakdown", origin.parts)
 
     def test_distribution_metadata_is_installed_for_editable_and_wheel_modes(self):
+        package = importlib.import_module("overscreening_breakdown")
         distribution = metadata.distribution("overscreening-breakdown")
         self.assertEqual(distribution.metadata["Name"].replace("_", "-").lower(),
                          "overscreening-breakdown")
-        self.assertEqual(metadata.version("overscreening-breakdown"), distribution.version)
-        self.assertTrue(distribution.version)
+        self.assertEqual(package.__version__, distribution.version)
         self.assertTrue(Path(distribution.locate_file("")).exists())
 
-    def test_installed_package_solves_outside_the_repository(self):
+    def test_installed_public_api_solves_outside_the_repository(self):
         script = textwrap.dedent("""
-            import importlib
             import json
             from pathlib import Path
             import mpmath as mp
             import overscreening_breakdown as package
-            import physical_problem
-            import solvers
+            from overscreening_breakdown import FluxProblem, solve
 
-            assert physical_problem is importlib.import_module('overscreening_breakdown.problems.flux')
-            assert solvers is importlib.import_module('overscreening_breakdown.solvers')
             original_bits = mp.mp.prec
-            problem = physical_problem.FluxProblem(
+            problem = FluxProblem(
                 delta='2',
                 f=lambda x, u, a: 2/(1+x)**3-96/(1+x)**5+u-1/(1+x),
                 f_u=lambda x, u, a: a.scalar(1),
                 boundary_conditions=(('1', None, None, '-6', None), (None,)*5),
             )
-            result = solvers.solve(problem, 4, solver='galerkin', use_mpmath=True,
-                                   precision=30, tolerance='1e-20', use_globalization=False)
+            result = solve(problem, 4, solver='galerkin', use_mpmath=True,
+                           precision=30, tolerance='1e-20', use_globalization=False)
             assert result.converged and result.newton_result.homotopy == 0
             assert abs(result.u(1)-result.arithmetic.scalar('0.5')) < result.arithmetic.scalar('1e-20')
             assert abs(result.w(1)+result.arithmetic.scalar('0.25')) < result.arithmetic.scalar('1e-20')

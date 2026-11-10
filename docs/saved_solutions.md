@@ -1,6 +1,6 @@
 # Saved solutions and explicit conversion
 
-`solution.save(path)` or `overscreening_breakdown.solution_io.save_solution(solution, path)` writes a
+`solution.save(path)` or `overscreening_breakdown.save_solution(solution, path)` writes a
 data-only JSON snapshot. It records the solver type, basis/version, actual
 unknown count, mapping/domain, exact working precision, physical metadata,
 coefficient fields, quadrature geometry, final convergence flags, and any
@@ -40,14 +40,21 @@ The existing collocation `save_solution` still writes its compatible pickle
 format, now tagged `solver_type="collocation"`. Its reader accepts older
 untagged payloads and bare arrays and rejects tagged Galerkin data. Import
 trusted legacy coefficients with explicit missing geometry using
-`solvers.load_legacy_collocation(path, problem=problem, N=..., L=...)`. The
+`overscreening_breakdown.load_legacy_collocation(path, problem=problem, N=..., L=...)`. The
 JSON loader does not read pickle files. An imported vector is not marked as a
 converged solution.
 
-For the permitted one-way conversion, use `solvers.project_collocation`:
+The public namespace cleanup does not change these numerical file formats.
+Bare numerical arrays and version-1 coefficient dictionaries remain readable
+through that canonical legacy importer. Pickles of project Python objects
+that refer to removed globals such as `spectral1d.solve_nonlinear_problem` or
+`overscreening_breakdown.overscreening_breakdown` are no longer supported.
+No import shim or automatic class-name remapping is installed for them.
+
+For the permitted one-way conversion, use `overscreening_breakdown.project_collocation`:
 
 ```python
-from overscreening_breakdown.solvers import project_collocation
+from overscreening_breakdown import project_collocation
 
 collocation = solve(problem, 8, solver="collocation", use_mpmath=True,
                     precision=50, tolerance="1e-35")

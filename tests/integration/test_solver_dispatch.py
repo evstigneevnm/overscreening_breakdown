@@ -187,7 +187,7 @@ class SolverDispatchTests(unittest.TestCase):
                 load_legacy_collocation(path, problem=make_problem(), N=2, L=1)
 
     def test_runnable_common_example_saves_projects_and_restores_two_fields(self):
-        from examples.common_solver_example import run
+        from examples.restart_and_projection import run
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             with redirect_stdout(io.StringIO()):
                 source, restored = run(directory)

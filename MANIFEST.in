@@ -1,4 +1,4 @@
-include LICENSE README.md pyproject.toml requirements*.txt .pre-commit-config.yaml
+include LICENSE README.md INSTALL.md pyproject.toml requirements*.txt .pre-commit-config.yaml
 recursive-include tests *.py
 recursive-include examples *.py *.ipynb *.md
 recursive-include benchmarks *.py

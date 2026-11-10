@@ -6,11 +6,13 @@ Current user examples use the common entry point under examples/.
 from matplotlib import pyplot as plt
 import numpy as np
 from overscreening_breakdown.collocation.spectral1d import solve_nonlinear_problem
-from overscreening_breakdown import overscreening_breakdown
+from overscreening_breakdown.problems.bsk import overscreening_breakdown as LegacyBSK
 
 
 def main():
-    problem = overscreening_breakdown()
+    # This historical adjoint experiment retains the legacy constructor's
+    # defaults (including wall value 100 and delta 50).
+    problem = LegacyBSK()
     L = 6
     MM = [50, 100, 150]
     use_mpmath = False

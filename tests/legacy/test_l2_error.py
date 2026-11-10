@@ -9,7 +9,7 @@ import warnings
 import mpmath as mp
 import numpy as np
 
-from spectral1d import collocation_discretization
+from overscreening_breakdown.collocation.spectral1d import collocation_discretization
 
 
 class L2ErrorTests(unittest.TestCase):

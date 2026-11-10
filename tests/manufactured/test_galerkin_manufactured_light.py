@@ -5,7 +5,7 @@ import unittest
 import mpmath as mp
 import numpy as np
 
-from overscreening_breakdown import Coefficient, overscreening_breakdown, solve
+from overscreening_breakdown import BSKProblem, Coefficient, NumpyArithmetic, solve
 from overscreening_breakdown.manufactured import rational_case, transmission_case
 from overscreening_breakdown.quadrature import QuadratureFactory
 
@@ -95,15 +95,19 @@ class GalerkinManufacturedLightTests(unittest.TestCase):
             self.check_rational_fields(refined, field_bound="1e-8")
 
     def test_runnable_example_reuses_one_problem_for_numpy_and_mpmath(self):
-        from examples.flux_problem_galerkin import make_problem, solve_example
+        from examples.galerkin import make_case, run
+        from examples._common import sampled_error
 
-        problem = make_problem()
+        case = make_case()
+        problem = case.make_problem()
         original_bits = mp.mp.prec
         states = []
         for use_mpmath in (False, True):
             with self.subTest(mpmath=use_mpmath):
-                solution, newton, check, error = solve_example(
-                    problem, use_mpmath=use_mpmath, precision=50)
+                solution = run(problem=problem, use_mpmath=use_mpmath, precision=50)
+                newton = solution.newton_result
+                check = solution.quadrature_history[-1]
+                error = sampled_error(solution, case)
                 self.assertTrue(solution.converged)
                 self.assertTrue(newton.converged)
                 self.assertTrue(check.quadrature_converged)
@@ -117,12 +121,14 @@ class GalerkinManufacturedLightTests(unittest.TestCase):
                 states.append(np.asarray([float(value) for value in solution.coefficients]))
         np.testing.assert_allclose(states[0], states[1], rtol=1e-10, atol=1e-10)
 
-    def test_existing_bsk_problem_binds_and_solves_with_variable_epsilon(self):
+    def test_bsk_problem_binds_and_solves_with_variable_epsilon(self):
         coefficient = Coefficient(lambda x, a: 1+a.scalar(1)/(1+x),
                                   lower_bound=1, upper_bound=2, wall_value=2)
-        problem = overscreening_breakdown(epsilon=coefficient)
-        problem.set_parameters(sigma=2, mu=0.1, gamma=0.5, delta=1, u0=0.05, u0xxx=0)
-        source = np.asarray(problem.physical_rhs(0.5, 0.03)).item()
+        problem = BSKProblem(
+            sigma=2, mu=0.1, gamma=0.5, delta=1, epsilon=coefficient,
+            boundary_conditions=((0.05, None, None, 0, None), (None,)*5),
+        )
+        source = problem.bind(NumpyArithmetic()).physical_rhs(0.5, 0.03)
         previous_bits = mp.mp.prec
         samples = []
         for use_mpmath, precision in ((False, 15), (True, 30)):
@@ -145,7 +151,7 @@ class GalerkinManufacturedLightTests(unittest.TestCase):
             samples.append(np.asarray(values))
             self.assertEqual(mp.mp.prec, previous_bits)
         np.testing.assert_allclose(samples[0], samples[1], rtol=1e-8, atol=1e-10)
-        self.assertEqual(np.asarray(problem.physical_rhs(0.5, 0.03)).item(), source)
+        self.assertEqual(problem.bind(NumpyArithmetic()).physical_rhs(0.5, 0.03), source)
 
     def test_transmission_solution_improves_in_physical_field_and_flux_norms(self):
         case = transmission_case()

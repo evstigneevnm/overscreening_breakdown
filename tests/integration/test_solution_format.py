@@ -400,7 +400,7 @@ class SolutionFormatTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "different solver type"):
                     action(self.path)
             save_solution(self.collocation(), self.path)
-            with self.assertRaisesRegex(ValueError, "solution_io.load_solution"):
+            with self.assertRaisesRegex(ValueError, r"overscreening_breakdown\.load_solution"):
                 solver.load_data(self.path)
 
 

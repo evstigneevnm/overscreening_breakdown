@@ -13,8 +13,8 @@ import unittest
 import mpmath as mp
 import numpy as np
 
-from overscreening_breakdown import overscreening_breakdown
-from spectral1d import solve_nonlinear_problem
+from overscreening_breakdown.problems.bsk import overscreening_breakdown
+from overscreening_breakdown.collocation.spectral1d import solve_nonlinear_problem
 
 
 class SolutionPersistenceTests(unittest.TestCase):

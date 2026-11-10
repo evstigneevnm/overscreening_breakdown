@@ -1,7 +1,8 @@
-"""Half-line collocation and mixed Galerkin solvers.
+"""Public problem, solve, solution, and diagnostic interfaces.
 
-The exports retain their existing signatures. Imports are lazy so importing a
-numerical component does not initialize plotting or either discretization.
+Imports are lazy: importing the package does not initialize plotting or either
+discretization. Advanced numerical components use package-qualified modules;
+the former flat-module imports are no longer installed.
 """
 
 from importlib import import_module
@@ -9,13 +10,17 @@ from importlib.metadata import version
 
 
 _EXPORTS = {
+    "BSKProblem": (".problems.bsk_problem", "BSKProblem"),
     "FluxProblem": (".problems.flux", "FluxProblem"),
     "BoundFluxProblem": (".problems.flux", "BoundFluxProblem"),
     "Coefficient": (".coefficients", "Coefficient"),
     "ConstantCoefficient": (".coefficients", "ConstantCoefficient"),
-    "overscreening_breakdown": (".problems.bsk", "overscreening_breakdown"),
-    "overscreening_breakdown_segment": (".problems.bsk", "overscreening_breakdown_segment"),
+    "NumpyArithmetic": (".arithmetic", "NumpyArithmetic"),
+    "MpmathArithmetic": (".arithmetic", "MpmathArithmetic"),
+    "QuadratureFactory": (".quadrature", "QuadratureFactory"),
+    "QuadraturePlan": (".quadrature", "QuadraturePlan"),
     "solve": (".solvers", "solve"),
+    "save_solution": (".solution_io", "save_solution"),
     "load_solution": (".solvers", "load_solution"),
     "load_legacy_collocation": (".solvers", "load_legacy_collocation"),
     "project_collocation": (".projection", "project_collocation"),
@@ -23,6 +28,10 @@ _EXPORTS = {
     "GalerkinSolution": (".galerkin.solution", "GalerkinSolution"),
     "plot_fields": (".plotting", "plot_fields"),
     "plot_coefficients": (".plotting", "plot_coefficients"),
+    "physical_l2_norm": (".norms", "physical_l2_norm"),
+    "physical_h1_norm": (".norms", "physical_h1_norm"),
+    "physical_l2_error": (".norms", "physical_l2_error"),
+    "physical_h1_error": (".norms", "physical_h1_error"),
 }
 
 __all__ = list(_EXPORTS)

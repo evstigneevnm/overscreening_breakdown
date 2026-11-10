@@ -98,8 +98,8 @@ jobs:
 
           import mpmath
           import overscreening_breakdown
-          import spectral1d
-          from overscreening_breakdown.collocation import spectral1d as canonical_spectral1d
+          from overscreening_breakdown import BSKProblem, FluxProblem, solve
+          from overscreening_breakdown.problems.bsk_problem import BSKProblem as CanonicalBSKProblem
 
           actual = mpmath.libmp.BACKEND
           expected = os.environ["EXPECTED_MPMATH_BACKEND"]
@@ -107,7 +107,8 @@ jobs:
           installed = Path(overscreening_breakdown.__file__).resolve()
           source = Path("src").resolve()
           assert source not in installed.parents, installed
-          assert spectral1d is canonical_spectral1d
+          assert BSKProblem is CanonicalBSKProblem
+          assert callable(solve) and callable(FluxProblem)
           if sys.version_info < (3, 10):
               import pytest_subtests
           print("mpmath backend:", actual)

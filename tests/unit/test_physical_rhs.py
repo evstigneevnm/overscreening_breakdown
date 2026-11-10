@@ -10,7 +10,7 @@ import numpy as np
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
 from overscreening_breakdown.coefficients import Coefficient, ConstantCoefficient
-from overscreening_breakdown import (
+from overscreening_breakdown.problems.bsk import (
     overscreening_breakdown,
     overscreening_breakdown_segment,
 )

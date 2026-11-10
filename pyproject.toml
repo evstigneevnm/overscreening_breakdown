@@ -69,14 +69,6 @@ dev = [
 [tool.setuptools]
 package-dir = {"" = "src"}
 include-package-data = false
-py-modules = [
-  "arithmetic", "coefficients", "nonlinear_solver", "rational_mapping",
-  "quadrature", "physical_problem", "spectral1d", "collocation_problem",
-  "collocation_solution", "galerkin", "galerkin_assembly", "solutions",
-  "solution_io", "projection", "solution_plotting", "solvers",
-  "manufactured_problems", "manufactured_solutions_solver",
-  "problems_for_updated_testing", "nonlinear_problem_on_segment",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]

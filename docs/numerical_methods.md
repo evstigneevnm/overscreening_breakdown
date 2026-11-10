@@ -2,25 +2,25 @@
 
 ## Physical problem and arithmetic
 
-`overscreening_breakdown` exposes its existing `delta` parameter and an immutable
-`epsilon` description. `physical_rhs(x, u)` and `physical_rhs_u(x, u)` evaluate
-the unscaled source and its analytic derivative, without homotopy damping.
-The existing `right_hand_side` methods retain their collocation normalization
-and homotopy factor. The Gaussian normalization used by the model is preserved.
+`BSKProblem` is an immutable physical description with explicit sigma, mu,
+gamma, delta, epsilon, domain, boundary conditions, and optional scalar initial
+guess. Bind it to solver-owned arithmetic to evaluate `physical_rhs(x, u)`
+and `physical_rhs_u(x, u)`, the unscaled source and its analytic derivative
+without homotopy damping. The model's Gaussian normalization is preserved.
 
 Bind a snapshot of a problem to arithmetic owned by its eventual solver:
 
 ```python
-from overscreening_breakdown.arithmetic import MpmathArithmetic
-from overscreening_breakdown.coefficients import Coefficient
-from overscreening_breakdown import overscreening_breakdown
+from overscreening_breakdown import BSKProblem, Coefficient, MpmathArithmetic
 
 epsilon = Coefficient(
     lambda x, a: a.scalar(1) if x < a.scalar("1") else a.scalar(2),
     lower_bound=1, upper_bound=2, wall_value=1, interfaces=("1",),
 )
-problem = overscreening_breakdown(epsilon=epsilon)
-problem.set_parameters(delta="2", gamma="0.5", u0="1")
+problem = BSKProblem(
+    sigma="10", mu="0", gamma="0.5", delta="2", epsilon=epsilon,
+    boundary_conditions=(("1", None, None, "0", None), (None,)*5),
+)
 physical = problem.bind(MpmathArithmetic(dps=120))
 value = physical.physical_rhs("0.5", "0.1")
 wall_epsilon = physical.epsilon.wall_value
@@ -29,8 +29,9 @@ wall_epsilon = physical.epsilon.wall_value
 `NumpyArithmetic()` supplies float64 operations. Each `MpmathArithmetic` owns an
 independent context and leaves global mpmath precision unchanged. Use decimal
 strings or integers for high-precision parameters; an existing binary float
-retains its original rounding. Binding copies parameter and boundary values;
-later changes to the source problem do not change an existing snapshot.
+retains its original rounding. Construct a new immutable description when
+changing physical parameters. Binding copies parameter and boundary values
+into a numerical snapshot without changing another owner's context.
 
 `Coefficient(function, ...)` uses a scalar `function(x, arithmetic)` callback.
 `Coefficient.from_function(epsilon_x, ...)` adapts an explicit one-argument
@@ -38,7 +39,7 @@ later changes to the source problem do not change an existing snapshot.
 wall trace, and every interior interface. These are caller declarations;
 evaluations check the bounds, while regularity is not inferred by sampling.
 At zero, evaluation returns the declared right trace. `ConstantCoefficient`
-describes a constant. Omitting `epsilon` in `set_parameters` preserves it.
+describes a constant.
 
 For a different physical source, `overscreening_breakdown.FluxProblem` accepts `delta`,
 `epsilon`, `f(x, u, arithmetic)`, `f_u(x, u, arithmetic)`, and optional domain,
@@ -82,9 +83,8 @@ python -B -m examples.restart_and_projection
 ```
 
 Pass `--output-dir /tmp/overscreening-example` to retain the applicable JSON
-snapshots and figures. Inspect `--help` for options. Compatibility entry points
-`examples.flux_problem_collocation`, `examples.flux_problem_galerkin`, and
-`examples.common_solver_example` delegate to these examples. Notebooks now live
+snapshots and figures. Inspect `--help` for options. The old three Python
+example wrapper modules have been removed. Notebooks live
 under `examples/notebooks/` and use the installed canonical package.
 
 ### Galerkin bases and quadrature
@@ -161,7 +161,7 @@ precision, as described above.
 ### Mixed Galerkin assembly
 
 `overscreening_breakdown.galerkin.assembly.GalerkinAssembly(problem, basis, plan)` binds an unbound
-`FluxProblem` or `overscreening_breakdown` description to the basis's arithmetic.
+`FluxProblem` or `BSKProblem` description to the basis's arithmetic.
 It captures the physical parameters, boundary data, and coefficient description
 once. An already bound problem is rejected because its parameters may have
 been rounded at another precision. Basis and plan must share the same arithmetic
@@ -206,7 +206,7 @@ supply a small mixed system:
 
 ```python
 from overscreening_breakdown.arithmetic import MpmathArithmetic
-from examples.flux_problem_collocation import make_problem
+from overscreening_breakdown.manufactured import rational_case
 from overscreening_breakdown.galerkin.basis import GalerkinBasis
 from overscreening_breakdown.galerkin.assembly import GalerkinAssembly
 from overscreening_breakdown.nonlinear_solver import solve_newton
@@ -215,7 +215,7 @@ from overscreening_breakdown.quadrature import QuadratureFactory
 arithmetic = MpmathArithmetic(dps=50)
 basis = GalerkinBasis(N=4, arithmetic=arithmetic, L="1")
 plan = QuadratureFactory(arithmetic, L="1").plan(order=8)
-assembly = GalerkinAssembly(make_problem(), basis, plan)
+assembly = GalerkinAssembly(rational_case(nonlinear=True).make_problem(), basis, plan)
 result = solve_newton(assembly.nonlinear_system(), atol="1e-35")
 u, w = basis.evaluate_fields(result.state, y=0, u_b="1")
 ```
@@ -257,10 +257,10 @@ description for either solver when epsilon is explicitly constant one.
 Nontrivial epsilon selects the mixed Galerkin method explicitly. For example:
 
 ```python
-from examples.flux_problem_collocation import make_problem
-from overscreening_breakdown.solvers import solve
+from overscreening_breakdown import solve
+from overscreening_breakdown.manufactured import rational_case
 
-problem = make_problem()
+problem = rational_case(nonlinear=True).make_problem()
 collocation = solve(
     problem, 8, solver="collocation", L="1", use_mpmath=True,
     precision=50, method="newton", tolerance="1e-35",
@@ -392,7 +392,9 @@ available, including its original constants and normalization. Linear case 8
 requires this path. Definitions in `manufactured.legacy_additional` involving
 epsilon multiplying selected derivatives are also retained as legacy equations:
 they are not the divergence-form variable-epsilon problem. The old flat import
-aliases remain usable for saved-data compatibility and regression checks.
+aliases are removed. Canonical low-level modules remain available for these
+explicitly selected equations, and numerical coefficient files retain their
+dedicated legacy reader. Old project-object pickle names are unsupported.
 
 ## Opt-in benchmark studies
 

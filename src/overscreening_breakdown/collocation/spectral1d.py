@@ -1211,7 +1211,7 @@ class solve_nonlinear_problem(collocation_discretization):
                 data = json.load(handle)
                 if not isinstance(data, dict) or data.get("solver_type") != "collocation":
                     raise ValueError("The collocation reader cannot load a different solver type.")
-                raise ValueError("Use solution_io.load_solution with the physical problem for JSON solutions.")
+                raise ValueError("Use overscreening_breakdown.load_solution with the physical problem for JSON solutions.")
             data = pickle.load(handle)
         if isinstance(data, dict):
             if data.get("solver_type", "collocation") != "collocation":

@@ -13,12 +13,12 @@ import mpmath as mp
 import numpy as np
 from scipy.optimize import OptimizeResult
 
-from overscreening_breakdown import (
+from overscreening_breakdown.problems.bsk import (
     overscreening_breakdown,
     overscreening_breakdown_segment,
 )
-from spectral1d import solve_nonlinear_problem
-from nonlinear_solver import LinearSolveError, solve_newton
+from overscreening_breakdown.collocation.spectral1d import solve_nonlinear_problem
+from overscreening_breakdown.nonlinear_solver import LinearSolveError, solve_newton
 
 
 class ScipySolverTests(unittest.TestCase):
@@ -141,7 +141,7 @@ class ScipySolverTests(unittest.TestCase):
                         **options,
                     )
 
-                with patch("spectral1d.solve_newton", side_effect=force_one_linear_failure):
+                with patch("overscreening_breakdown.collocation.spectral1d.solve_newton", side_effect=force_one_linear_failure):
                     coefficients = solver.solve_problem()
                 result = solver.get_newton_result()
                 self.assertTrue(solver.is_converged())
@@ -167,7 +167,7 @@ class ScipySolverTests(unittest.TestCase):
         coefficients = solver.solve_problem()
         self.assertIsNotNone(solver.get_newton_result())
         solver.set_method("root")
-        with patch("spectral1d.optimize.root", return_value=OptimizeResult(
+        with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", return_value=OptimizeResult(
             x=coefficients, success=True,
         )):
             solver.solve_problem()
@@ -179,7 +179,7 @@ class ScipySolverTests(unittest.TestCase):
                 solver = self.solver(method)
                 expected = np.linspace(0, 0.5, 10)
                 result = OptimizeResult(x=expected, success=True)
-                with patch("spectral1d.optimize.root", return_value=result):
+                with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", return_value=result):
                     actual = solver.solve_problem()
                 np.testing.assert_array_equal(actual, expected)
                 self.assertTrue(solver.is_converged())
@@ -193,7 +193,7 @@ class ScipySolverTests(unittest.TestCase):
                     OptimizeResult(x=np.zeros(10), success=True),
                     OptimizeResult(x=last_iterate, success=False),
                 ]
-                with patch("spectral1d.optimize.root", side_effect=results):
+                with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", side_effect=results):
                     solver.solve_problem()
                     self.assertTrue(solver.is_converged())
                     actual = solver.solve_problem()
@@ -208,7 +208,7 @@ class ScipySolverTests(unittest.TestCase):
                     OptimizeResult(x=np.zeros(10), success=True),
                     RuntimeError("unexpected solver error"),
                 ]
-                with patch("spectral1d.optimize.root", side_effect=results):
+                with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", side_effect=results):
                     solver.solve_problem()
                     self.assertTrue(solver.is_converged())
                     with self.assertRaisesRegex(RuntimeError, "unexpected solver error"):

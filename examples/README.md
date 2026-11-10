@@ -8,6 +8,7 @@ python -m examples.collocation --backend both
 python -m examples.galerkin --backend both
 python -m examples.variable_epsilon --backend both
 python -m examples.restart_and_projection --backend both
+python -m examples.bsk --solver both --backend both
 ```
 
 Each script returns native solution objects from the common `solve` entry point.
@@ -40,16 +41,24 @@ both independent mixed fields. Projected fields carry `converged=False` until
 the mixed equations and quadrature checks pass. A Galerkin snapshot cannot be
 loaded as collocation data.
 
-The earlier `flux_problem_collocation`, `flux_problem_galerkin`, and
-`common_solver_example` module names remain compatibility entry points. Their
-tuple arities are retained; result entries use the common solution and
-quadrature-history interfaces.
+`bsk.py` constructs an immutable `BSKProblem` directly, with explicit physical
+parameters and boundary values, and reuses it across both discretizations and
+arithmetic backends. To change a problem, create a new description. A finite
+segment uses the same class with an explicit domain and endpoint data. The
+Gaussian-forced example keeps a separate `1e-12` quadrature consistency target;
+50-digit arithmetic and a tighter Newton target do not themselves establish
+50-digit integration accuracy.
+
+Use the module names listed above. The former `flux_problem_collocation`,
+`flux_problem_galerkin`, and `common_solver_example` entry points have been
+removed, together with the flat compatibility import modules.
 
 The four original notebooks are in [`notebooks/`](notebooks/). Their research
 parameters and sweep sizes are retained, and stale outputs are cleared. They
 import the installed package without changing directories. Set
 `OVERSCREENING_OUTPUT_DIR` to choose where saved files go. Ordinary solves and
-typed restarts use the common interface. Explicitly labelled adjoint and
+typed restarts use the common interface and immutable `BSKProblem` descriptions.
+Explicitly labelled adjoint and
 unsupported boundary/operator experiments retain the canonical legacy
 collocation path. Those full sweeps are opt-in; CI executes the bounded scripts
 and checks notebook structure without running the expensive cells.

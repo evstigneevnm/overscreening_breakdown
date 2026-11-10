@@ -1,5 +1,7 @@
 # Installation and development
 
+For concise installation and build commands, see [INSTALL.md](../INSTALL.md).
+
 Linux with Python 3.9–3.13 is the validated platform. The distribution name is
 `overscreening-breakdown`; the import package is `overscreening_breakdown`.
 The existing Apache-2.0 license is included in source and wheel distributions.
@@ -73,13 +75,13 @@ value still disables gmpy. Use `CI_ARTIFACT_DIR` to retain plot artifacts.
 
 ```bash
 python -m build
-python -m pip install "dist/overscreening_breakdown-0.1.0-py3-none-any.whl[test]"
+python -m pip install --force-reinstall "dist/overscreening_breakdown-0.1.0-py3-none-any.whl[test]"
 ```
 
 The default build creates a source archive, then builds its wheel from that
 archive. The archive contains tests, examples and notebooks, benchmarks, experiments, docs,
-and requirements files; the wheel contains only the runtime package, legacy
-compatibility modules, and distribution metadata/license.
+and requirements files; the wheel contains only the canonical runtime package
+and distribution metadata/license.
 
 CI installs this wheel before running the ten Linux Python/backend
 configurations. It checks that imports come from the installed distribution
@@ -87,25 +89,35 @@ rather than `src/`, runs pytest with JUnit output, and retains dependency lists
 and plots. One job records coverage. A separate job validates the limited
 correctness lint rules and builds the distributions.
 
-## Compatibility during the reorganization
+## Public interface after the reorganization
 
-Stage 1 moved and packaged the existing implementation and tests while
-preserving behavior. Stage 2 migrates manufactured cases, user examples,
-notebooks, and opt-in studies to the canonical package and common solver.
-Stage 3 will change the public interface separately. See the
+The package/test organization, manufactured-case/example migration, and public
+interface cleanup are complete. The third stage intentionally removes the old
+flat import aliases and lowercase BSK entry points. See the
+[public API migration guide](public_api.md) for exact replacements and the
 [numerical guide](numerical_methods.md) for catalog classifications and the
 explicit historical equation paths.
 
-The first stage retains old import paths such as `spectral1d`, `solvers`, and
-`physical_problem` through installed compatibility modules. Legacy imports of
-the BSK classes from `overscreening_breakdown` remain available. Current examples
-use canonical imports; notebooks live in `examples/notebooks/`. Run bounded
+Use canonical imports from `overscreening_breakdown`. Current examples and
+notebooks use the immutable `BSKProblem` or catalog definitions; notebooks live
+in `examples/notebooks/`. Run bounded
 examples with `python -m examples.collocation`, `python -m examples.galerkin`,
 `python -m examples.variable_epsilon`, and
-`python -m examples.restart_and_projection` after installation. Existing Python
-example entry points delegate to these commands. The new
+`python -m examples.restart_and_projection` after installation. The three old
+Python example wrapper modules have been removed. The
 canonical implementation lives under `src/overscreening_breakdown/`; no
 `PYTHONPATH=src` setting is needed for installed or editable use.
+
+When replacing an earlier local wheel with the same distribution version,
+force reinstall the project wheel so its old recorded flat modules are removed:
+
+```bash
+python -m pip install --force-reinstall --no-deps dist/overscreening_breakdown-0.1.0-py3-none-any.whl
+```
+
+Install the validated dependencies first as described above. The remaining
+canonical legacy coefficient reader supports numerical pickle payloads;
+old pickles of project Python objects are outside the compatibility contract.
 
 Benchmark modules are checkout/source-archive tools; see
 `python -m benchmarks.run_manufactured --help` and
