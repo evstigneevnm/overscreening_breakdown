@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Tuple
 
 from coefficients import as_coefficient
+from rational_mapping import arithmetic_signature
 
 
 _DEFAULT_BOUNDARIES = (
@@ -123,6 +124,14 @@ class BoundFluxProblem:
     _f: Callable = field(repr=False, compare=False)
     _f_u: Callable = field(repr=False, compare=False)
     _initial_guess: Any = field(default=None, repr=False, compare=False)
+    precision_signature: tuple = field(init=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "precision_signature", arithmetic_signature(self.arithmetic))
+
+    def check_precision(self):
+        if arithmetic_signature(self.arithmetic) != self.precision_signature:
+            raise RuntimeError("physical problem precision changed; bind a new snapshot")
 
     def _coordinate(self, x):
         x = _finite_scalar(self.arithmetic, x, "physical coordinate")

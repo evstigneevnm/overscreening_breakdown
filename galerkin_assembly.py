@@ -99,6 +99,7 @@ class GalerkinAssembly:
         return self._finite(value, "mixed assembly sum")
 
     def _initialize(self, physical, basis, plan):
+        physical.check_precision()
         object.__setattr__(self, "basis", basis)
         object.__setattr__(self, "plan", plan)
         object.__setattr__(self, "physical", physical)
@@ -186,6 +187,15 @@ class GalerkinAssembly:
     def check_precision(self):
         """Reject stale basis, geometry and cached assembly after a bit change."""
         self.table.check_precision()
+        self.physical.check_precision()
+
+    @classmethod
+    def _from_snapshot(cls, physical, basis, plan):
+        """Internal reuse of a stamped bound snapshot without rebinding callbacks."""
+        physical.check_precision()
+        result = object.__new__(cls)
+        result._initialize(physical, basis, plan)
+        return result
 
     def _assemble_constant_terms(self, q_b):
         table, weights = self.table, self.plan.physical_weights
@@ -350,9 +360,7 @@ class GalerkinAssembly:
     def with_plan(self, plan):
         """Build a new fixed system, retaining the same physical snapshot."""
         self.check_precision()
-        result = object.__new__(type(self))
-        result._initialize(self.physical, self.basis, plan)
-        return result
+        return type(self)._from_snapshot(self.physical, self.basis, plan)
 
     def refined(self, order_factor=2, subdivisions_factor=1):
         """Reassemble on a refined plan; existing coefficients remain valid."""

@@ -1180,10 +1180,10 @@ class solve_nonlinear_problem(collocation_discretization):
         if self.__use_mpmath:
             coefficients = [self.__coefficient_as_mpf(value)
                             for value in np.asarray(data, dtype=object).reshape(-1)]
-            data_1 = {"format_version": 1, "backend": "mpmath",
+            data_1 = {"format_version": 1, "solver_type": "collocation", "backend": "mpmath",
                       "precision_dps": self.__mp_ref.mp.dps, "coefficients": coefficients}
         else:
-            data_1 = {"format_version": 1, "backend": "numpy",
+            data_1 = {"format_version": 1, "solver_type": "collocation", "backend": "numpy",
                       "coefficients": np.asarray(data, dtype=np.float64).reshape(-1)}
         with open(file_name, 'wb') as handle:
             pickle.dump(data_1, handle)
@@ -1204,8 +1204,18 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def __load_data(self, file_name):
         with open(file_name, 'rb') as handle:
+            prefix = handle.read(256).lstrip()
+            handle.seek(0)
+            if prefix.startswith(b"{"):
+                import json
+                data = json.load(handle)
+                if not isinstance(data, dict) or data.get("solver_type") != "collocation":
+                    raise ValueError("The collocation reader cannot load a different solver type.")
+                raise ValueError("Use solution_io.load_solution with the physical problem for JSON solutions.")
             data = pickle.load(handle)
         if isinstance(data, dict):
+            if data.get("solver_type", "collocation") != "collocation":
+                raise ValueError("The collocation reader cannot load a different solver type.")
             if data.get("format_version") != 1:
                 raise ValueError("Unsupported solution file format version.")
             if data.get("backend") not in ("numpy", "mpmath") or "coefficients" not in data:

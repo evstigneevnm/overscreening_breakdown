@@ -40,6 +40,8 @@ python -B -m unittest -v \
   test_collocation_adapter test_flux_collocation test_collocation_mapping \
   test_rational_mapping test_galerkin_quadrature test_galerkin_basis \
   test_galerkin_assembly test_galerkin_manufactured_light \
+  test_galerkin_solution test_solution_format test_galerkin_projection \
+  test_solver_dispatch test_galerkin_plotting \
   test_manufactured_linear_light test_manufactured_nonlinear_light \
   test_plotting_light
 ```
@@ -69,6 +71,9 @@ Jacobian directional checks, scalar source homotopy, quadrature refinement, and
 small manufactured problems with constant, smooth-variable, and jump
 coefficients. Tiny exactly represented fields exercise the selected mpmath
 precisions without a spatial error floor.
+Solution tests cover physical field norms, solver-tagged persistence, explicit
+collocation-to-Galerkin projection, the common entry point, and Galerkin PDF/PNG
+rendering. The original collocation plots remain in the regression suite.
 
 Plot files use temporary directories by default. Set `CI_ARTIFACT_DIR=ci-artifacts`
 to keep them. GitHub Actions retains the plots, test log, and installed dependency
@@ -338,8 +343,169 @@ It reuses a physical problem with `epsilon(x)=1+1/(1+x)` for NumPy and
 50-digit mpmath solves, reporting Newton convergence, quadrature convergence,
 and sampled errors in both independent fields separately.
 
-A common solver dispatcher, physical error norms, and two-field saved solutions
-remain for the next stage. Existing collocation persistence is unchanged.
+### Common solver entry point and physical fields
+
+`solvers.solve(problem, N, solver=...)` accepts the same unbound physical
+description for either solver when epsilon is explicitly constant one.
+Nontrivial epsilon selects the mixed Galerkin method explicitly. For example:
+
+```python
+from examples.flux_problem_collocation import make_problem
+from solvers import solve
+
+problem = make_problem()
+collocation = solve(
+    problem, 8, solver="collocation", L="1", use_mpmath=True,
+    precision=50, method="newton", tolerance="1e-35",
+)
+mixed = solve(
+    problem, 4, solver="galerkin", L="1", use_mpmath=True,
+    precision=50, tolerance="1e-35", quadrature_order=8,
+)
+u_at_one, w_at_one = mixed.u("1"), mixed.w("1")
+```
+
+Collocation retains `newton`, `root`, `root_no_jac`, and `nonlin_solve` with
+NumPy, and Newton with mpmath. Galerkin uses the shared Newton driver with
+damping and continuation. A finite interval or `delta=0` can still use the
+supported collocation boundary families; the mixed Galerkin method supports
+only the fourth-order half-line problem described above. Existing manufactured
+classes need an explicit `FluxProblem` adapter before using the common entry
+point; their plots and notebooks are not automatically converted to Galerkin.
+
+Both solution types expose `u(x)`, `w(x)`, `u_dx(x)`, `w_dx(x)`, and `flux(x)`
+in physical coordinates. Scalars return native arithmetic scalars; arrays
+preserve shape and return float64 or object arrays. Galerkin stores independent
+coefficients for both fields and evaluates
+`flux=epsilon*(u_dx+delta**2*w_dx)`. Collocation retains its single coefficient
+vector and derives `w=-u''`. Coefficient properties return copies. Saved or
+evaluated solution objects own their arithmetic and reject a subsequent change
+to that context's exact bit precision. The common collocation wrapper restores
+global mpmath precision after calling the legacy implementation; direct legacy
+solver instances retain their existing global-context limitation.
+
+For Galerkin, `converged` requires both `nonlinear_converged` and
+`quadrature_converged`. The latter compares the residual and Jacobian at the
+same fixed state on a finer rule. `quadrature_atol` and `quadrature_rtol` default
+to the requested Newton tolerance. `max_refinements=3` permits three additional
+solves on successively finer plans; reaching that limit can leave Newton
+converged while the overall result remains unconverged. `newton_result` and
+`quadrature_history` expose the separate outcomes. The final Newton convergence
+check is at `q=0`. These algebraic diagnostics remain distinct from physical
+field errors.
+
+`initial_guess` can be a compatible solution object, a new-format saved path,
+raw coefficients in the selected basis, or a scalar callback
+`initial_guess(x, arithmetic)`. A solution restart must match the solver,
+resolution, mapping, and physical metadata. A Galerkin callback is projected
+into the first field, with its independent second field initialized to zero.
+A supplied problem callback is used in the same way. A solver change requires
+the explicit projection described below.
+
+### Physical norms
+
+Mixed solutions provide `l2_norm(field="u", plan=...)`,
+`h1_norm(field="u", plan=...)`, `l2_error(reference, field="u", plan=...)`,
+and `h1_error(reference, reference_dx, field="u", plan=...)`. Select `"u"` or
+`"w"`; `"flux"` is also available for L2 diagnostics. All integrate in physical
+`dx`, and H1 includes both the value and its physical derivative. For example:
+
+```python
+error = mixed.l2_error(lambda x: 1/(1+x), field="u", plan=mixed.plan)
+w_norm = mixed.h1_norm(field="w", plan=mixed.plan)
+```
+
+The scalar helpers `solutions.physical_l2_norm`, `physical_h1_norm`,
+`physical_l2_error`, and `physical_h1_error` also accept field callbacks from
+either solution type. The supplied positive quadrature plan must use compatible
+arithmetic; mixed field diagnostics additionally check mapping length and
+epsilon interface splits. Quadrature error remains part of these numerical
+norms. The legacy `spectral1d.L2_error` retains its mapped-coordinate meaning
+and existing return shape.
+The caller must supply integrable fields: a finite quadrature value does not
+establish integrability on the half-line. A collocation polynomial with a
+nonzero value at infinity is outside physical L2/H1 until explicitly corrected.
+
+### Saved solutions and explicit conversion
+
+`solution.save(path)` or `solution_io.save_solution(solution, path)` writes a
+data-only JSON snapshot. It records the solver type, basis/version, actual
+unknown count, mapping/domain, exact working precision, physical metadata,
+coefficient fields, quadrature geometry, final convergence flags, and any
+projection provenance. Mpmath values use exact binary mantissas and exponents;
+float64 uses hexadecimal values, preserving signed zero. Decimal mapping and
+interface inputs are retained for a later precision change.
+
+```python
+from solvers import load_solution
+
+mixed.save("mixed.json")
+restored = load_solution("mixed.json", problem=problem, solver="galerkin")
+```
+
+Supply the unbound physical problem again: executable callbacks are never
+serialized. Loading verifies its domain, delta, boundary data, epsilon
+description, and sampled epsilon values at the saved arithmetic precision.
+Sampling does not certify arbitrary callback identity, and source `f`/`f_u`
+callbacks are supplied by the caller. Loading reconstructs fields without
+solving. An expected solver mismatch is rejected in either direction; loading
+never projects coefficients automatically.
+
+The default restores the saved backend and exact bit precision, including a
+noncanonical bit count. Explicit `use_mpmath` and `precision` overrides can
+round data. A backend or working-bit change clears all convergence flags;
+otherwise the saved flags remain provenance rather than a new numerical
+certificate. Newton iteration objects and quadrature iteration histories are
+not serialized. Loading never changes global mpmath precision.
+
+The existing collocation `save_solution` still writes its compatible pickle
+format, now tagged `solver_type="collocation"`. Its reader accepts older
+untagged payloads and bare arrays and rejects tagged Galerkin data. Import
+trusted legacy coefficients with explicit missing geometry using
+`solvers.load_legacy_collocation(path, problem=problem, N=..., L=...)`. The
+JSON loader does not read pickle files. An imported vector is not marked as a
+converged solution.
+
+For the permitted one-way conversion, use `solvers.project_collocation`:
+
+```python
+from solvers import project_collocation
+
+restart = project_collocation(collocation, N=4, L="1", trace_tolerance="1e-35")
+mixed = solve(
+    problem, 4, solver="galerkin", L="1", use_mpmath=True,
+    precision=50, tolerance="1e-35", initial_guess=restart,
+)
+```
+
+This projects the corrected collocation field and its negative second
+derivative independently in physical H1. It retains the source's arithmetic
+owner and physical problem. The source must satisfy the mixed half-line,
+epsilon-one, delta-positive boundary requirements. Tiny wall/far-field defects
+are explicitly corrected before integration and recorded in `projection_info`;
+defects above the trace tolerance are rejected. A projected restart has all
+convergence flags false until the target equations are solved and checked.
+There is no reverse conversion. If mapping length changes, projection loads
+are rational and its fixed rule requires a separate integration assessment;
+`quadrature_order` and `subdivisions` control that rule.
+The default trace tolerance is scaled machine roundoff; the explicit threshold
+in the example permits the stated normalization at the collocation solve's
+tolerance and records the applied corrections.
+
+Run the common-interface [example](examples/common_solver_example.py) from the
+repository root:
+
+```bash
+python -B -m examples.common_solver_example
+```
+
+Add `--output-dir /tmp/common-solver-example` to retain its JSON snapshot and
+the field/coefficient PDF figures. `solution_plotting.plot_fields(solution)`
+returns a figure with `u`, `w`, and physical flux; `plot_coefficients(solution)`
+keeps the two Galerkin coefficient fields in separate panels. They also accept
+collocation solution objects, preserve native arithmetic through field
+evaluation, and convert to float64 only for Matplotlib rendering. Neither
+helper shows or saves the figure automatically.
 
 #### For manufactured glabal tests run the following from your local folder
 

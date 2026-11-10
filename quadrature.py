@@ -76,6 +76,12 @@ class QuadraturePlan:
     def precision_signature(self):
         return self.mapping.precision_signature
 
+    @property
+    def raw_interfaces(self):
+        """Original physical split inputs, including extra integration splits."""
+        self.check_precision()
+        return self._factory.raw_interfaces
+
     def check_precision(self):
         """Reject a plan rounded before its owner's precision was changed."""
         self.mapping.check_precision()
@@ -175,6 +181,11 @@ class QuadratureFactory:
     @property
     def arithmetic(self):
         return self._arithmetic
+
+    @property
+    def raw_interfaces(self):
+        """Immutable original physical interface inputs retained for rebuilding."""
+        return self._raw_interfaces
 
     def _refresh_geometry(self):
         signature = arithmetic_signature(self.arithmetic)

@@ -71,6 +71,8 @@ jobs:
             test_collocation_adapter test_flux_collocation test_collocation_mapping \
             test_rational_mapping test_galerkin_quadrature test_galerkin_basis \
             test_galerkin_assembly test_galerkin_manufactured_light \
+            test_galerkin_solution test_solution_format test_galerkin_projection \
+            test_solver_dispatch test_galerkin_plotting \
             test_manufactured_linear_light test_manufactured_nonlinear_light \
             test_plotting_light \
             2>&1 | tee "$CI_ARTIFACT_DIR/tests.log"
