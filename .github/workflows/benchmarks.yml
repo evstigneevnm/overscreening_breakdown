@@ -1,0 +1,106 @@
+name: Manual manufactured benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      case:
+        description: "Catalog case (for example rational:constant or linear:8)"
+        type: string
+        default: "rational:constant"
+      solver:
+        type: choice
+        options: [galerkin, collocation, legacy_collocation]
+        default: galerkin
+      study:
+        type: choice
+        options: [single, resolution, quadrature, precision]
+        default: single
+      resolutions:
+        description: "Space-separated N values; multiple values only for resolution"
+        type: string
+        default: "8"
+      quadrature_orders:
+        description: "Space-separated orders; empty selects 2*N"
+        type: string
+        default: ""
+      precisions:
+        description: "Decimal digits; multiple values only for precision study"
+        type: string
+        default: "50"
+      arithmetic:
+        type: choice
+        options: [numpy, mpmath]
+        default: numpy
+      mp_backend:
+        type: choice
+        options: [python, gmpy]
+        default: gmpy
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      MPLBACKEND: Agg
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      BENCHMARK_CASE: ${{ inputs.case }}
+      BENCHMARK_SOLVER: ${{ inputs.solver }}
+      BENCHMARK_STUDY: ${{ inputs.study }}
+      BENCHMARK_RESOLUTIONS: ${{ inputs.resolutions }}
+      BENCHMARK_ORDERS: ${{ inputs.quadrature_orders }}
+      BENCHMARK_PRECISIONS: ${{ inputs.precisions }}
+      BENCHMARK_ARITHMETIC: ${{ inputs.arithmetic }}
+      BENCHMARK_BACKEND: ${{ inputs.mp_backend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install package and validated dependencies
+        run: python -m pip install ".[gmpy]"
+      - name: Select pure Python mpmath backend
+        if: inputs.mp_backend == 'python'
+        run: echo "MPMATH_NOGMPY=1" >> "$GITHUB_ENV"
+      - name: Run the selected study
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          study = os.environ["BENCHMARK_STUDY"]
+          precision = study == "precision"
+          module = "benchmarks.run_precision" if precision else "benchmarks.run_manufactured"
+          args = [sys.executable, "-B", "-m", module,
+                  "--case", os.environ["BENCHMARK_CASE"],
+                  "--solver", os.environ["BENCHMARK_SOLVER"],
+                  "--arithmetic", "mpmath" if precision else os.environ["BENCHMARK_ARITHMETIC"],
+                  "--backend", os.environ["BENCHMARK_BACKEND"],
+                  "--output-dir", "benchmark-results", "--tolerance", "auto",
+                  "--N", *os.environ["BENCHMARK_RESOLUTIONS"].split()]
+          digits = os.environ["BENCHMARK_PRECISIONS"].split()
+          args += ["--precisions" if precision else "--precision", *digits]
+          if not precision:
+              args += ["--study", study]
+          if study == "quadrature":
+              args += ["--max-refinements", "0"]
+          orders = os.environ["BENCHMARK_ORDERS"].split()
+          if orders:
+              args += ["--quadrature-order", *orders]
+          subprocess.check_call(args)
+          PY
+      - name: Retain numerical records
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: manufactured-${{ inputs.study }}-${{ inputs.solver }}-${{ github.run_id }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30

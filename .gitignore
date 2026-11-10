@@ -50,7 +50,20 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
+*.whl
+
+# Generated project results and CI downloads
 ci-artifacts/
+benchmark-results/
+notebook-output/
+/wheelhouse/
+/figures/
+/experiments/figures/
+/solution.pickle
+/solution_*.pickle
+/experiments/solution.pickle
+/experiments/solution_*.pickle
 
 # Translations
 *.mo
@@ -76,7 +89,7 @@ docs/_build/
 target/
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 
 # IPython
 profile_default/
@@ -104,7 +117,11 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.template
 .venv
+.venv-*/
 env/
 venv/
 ENV/

@@ -1,0 +1,3 @@
+# Editable development with the validated scientific/notebook stack.
+-r requirements.txt
+-e .[test,dev]

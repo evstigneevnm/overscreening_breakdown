@@ -1,0 +1,9 @@
+include LICENSE README.md pyproject.toml requirements*.txt .pre-commit-config.yaml
+recursive-include tests *.py
+recursive-include examples *.py *.ipynb *.md
+recursive-include benchmarks *.py
+recursive-include experiments *.py
+recursive-include docs *.md
+recursive-include .github/workflows *.yml
+prune examples/.ipynb_checkpoints
+global-exclude __pycache__ *.py[cod] *-checkpoint.ipynb
