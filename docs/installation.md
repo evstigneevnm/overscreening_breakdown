@@ -108,6 +108,12 @@ Python example wrapper modules have been removed. The
 canonical implementation lives under `src/overscreening_breakdown/`; no
 `PYTHONPATH=src` setting is needed for installed or editable use.
 
+User example command lines default to live solver reporting. Add
+`--verbosity 0` to suppress solver progress or `--verbosity 3` for trial and
+linear-solve details. Notebook helpers default to `verbosity=2`; installed
+library calls remain quiet unless `verbosity` or a `progress_callback` is
+supplied. The removed boolean `verbose` interface has no compatibility alias.
+
 When replacing an earlier local wheel with the same distribution version,
 force reinstall the project wheel so its old recorded flat modules are removed:
 

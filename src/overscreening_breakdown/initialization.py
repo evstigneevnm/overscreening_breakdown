@@ -1,6 +1,7 @@
 """Bounded, optional initial-guess refinement before a nonlinear solve."""
 
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from numbers import Integral
 
 import numpy as np
@@ -51,7 +52,8 @@ class _EvaluationLimit(Exception):
     pass
 
 
-def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200):
+def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200,
+                      progress=None):
     """Refine a NumPy guess at q=0, retaining only verified improvements.
 
     A hard combined residual/Jacobian budget bounds the prepass. If that
@@ -74,6 +76,13 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200):
     best_norm = system.scalar("inf")
     initial_norm = best_norm
     counts = [0, 0]
+
+    def emit(kind, *, level=1, throttle=False, **data):
+        if progress is not None:
+            progress.emit(kind, level=level, throttle=throttle, **data)
+
+    emit("initializer_start", initializer="fsolve", budget=int(max_evaluations),
+         step_tolerance=np.float64(tolerance), homotopy=zero)
 
     def consume(index):
         if sum(counts) >= max_evaluations:
@@ -102,16 +111,26 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200):
             raise ValueError("residual_norm must be nonnegative")
         if norm < best_norm:
             best, best_norm = values.copy(), system.scalar(norm)
+        emit("initializer_evaluation", level=2, throttle=True,
+             initializer="fsolve", evaluations=sum(counts), budget=int(max_evaluations),
+             function_evaluations=counts[0], jacobian_evaluations=counts[1],
+             residual_norm=norm, best_residual_norm=best_norm, homotopy=zero)
         return residual
 
     def jacobian(values):
         consume(1)
         values = state(values)
-        matrix = np.asarray(system.jacobian(values.copy(), zero))
+        with (progress.phase("initializer_jacobian", level=3,
+                             evaluations=sum(counts), homotopy=zero)
+              if progress is not None else nullcontext()):
+            matrix = np.asarray(system.jacobian(values.copy(), zero))
         if matrix.shape != (len(original), len(original)) or matrix.dtype != original.dtype:
             raise ValueError("initializer Jacobian must be a square NumPy float64 matrix")
         if not np.all(np.isfinite(matrix)):
             raise OverflowError("nonfinite initializer Jacobian")
+        emit("initializer_jacobian", level=3, initializer="fsolve",
+             evaluations=sum(counts), budget=int(max_evaluations),
+             function_evaluations=counts[0], jacobian_evaluations=counts[1], homotopy=zero)
         return matrix
 
     status, success, message = None, False, ""
@@ -124,10 +143,12 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200):
         elif sum(counts) >= max_evaluations:
             reason = "evaluation_limit"
         else:
-            candidate, info, status, message = optimize.fsolve(
-                evaluate, original.copy(), fprime=jacobian,
-                xtol=float(tolerance), maxfev=int(max_evaluations), full_output=True,
-            )
+            with (progress.phase("fsolve", level=1, budget=int(max_evaluations))
+                  if progress is not None else nullcontext()):
+                candidate, info, status, message = optimize.fsolve(
+                    evaluate, original.copy(), fprime=jacobian,
+                    xtol=float(tolerance), maxfev=int(max_evaluations), full_output=True,
+                )
             status, message = int(status), str(message)
             success = status == 1
             # fsolve may return without a final callback at its reported state.
@@ -147,9 +168,15 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200):
     accepted = bool(system.isfinite(initial_norm) and best_norm < initial_norm)
     selected = best if accepted else original
     final_norm = best_norm if accepted else initial_norm
-    return InitializationResult(
+    result = InitializationResult(
         state=selected.copy(), accepted=accepted, reason=reason,
         initial_norm=initial_norm, final_norm=final_norm,
         evaluations=sum(counts), function_evaluations=counts[0], jacobian_evaluations=counts[1],
         scipy_status=status, scipy_success=success, message=message,
     )
+    emit("initializer_end", initializer="fsolve", accepted=accepted, reason=reason,
+         initial_norm=initial_norm, residual_norm=final_norm,
+         evaluations=sum(counts), budget=int(max_evaluations),
+         function_evaluations=counts[0], jacobian_evaluations=counts[1],
+         scipy_status=status, scipy_success=success, message=message, homotopy=zero)
+    return result

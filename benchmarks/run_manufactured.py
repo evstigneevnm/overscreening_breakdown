@@ -30,6 +30,22 @@ from overscreening_breakdown.solvers import solve
 SAMPLE_POINTS = ("0", "0.125", "0.5", "1", "2", "4", "8")
 
 
+class _Tee:
+    """Retain a benchmark's solver log while streaming requested progress."""
+
+    def __init__(self, captured, live):
+        self.captured, self.live = captured, live
+
+    def write(self, text):
+        count = self.captured.write(text)
+        self.live.write(text)
+        return count
+
+    def flush(self):
+        self.captured.flush()
+        self.live.flush()
+
+
 def _positive_integer(value):
     result = int(value)
     if result <= 0:
@@ -68,6 +84,8 @@ def parser(*, precision_study=False):
                         help="positive decimal value, or auto for working-precision guard digits")
     result.add_argument("--max-iterations", type=_nonnegative_integer, default=50)
     result.add_argument("--no-globalization", action="store_true")
+    result.add_argument("--verbosity", type=int, choices=range(4), default=0,
+                        help="solver progress: 0 quiet, 1 phases, 2 steps, 3 detailed trials")
     result.add_argument("--globalization-init", default="1")
     result.add_argument("--quadrature-order", nargs="+", type=_positive_integer)
     result.add_argument("--subdivisions", type=_positive_integer, default=1)
@@ -215,6 +233,7 @@ def _common(case, options, N, precision, quadrature_order):
         globalization_init=options.globalization_init, quadrature_order=quadrature_order,
         subdivisions=options.subdivisions, quadrature_atol=options.quadrature_atol,
         quadrature_rtol=options.quadrature_rtol, max_refinements=options.max_refinements,
+        verbosity=options.verbosity,
     )
     solve_seconds = perf_counter()-started
     arithmetic = solution.arithmetic
@@ -262,7 +281,8 @@ def _legacy(case, options, N, precision):
             use_method=options.method, tolerance=arithmetic.scalar(options.tolerance),
             total_iterations=options.max_iterations,
             use_globalization=not options.no_globalization,
-            globalization_init=arithmetic.scalar(options.globalization_init))
+            globalization_init=arithmetic.scalar(options.globalization_init),
+            verbosity=options.verbosity)
         coefficients = discretization.solve_problem()
         converged = discretization.is_converged()
         result = discretization.get_newton_result()
@@ -406,7 +426,8 @@ def main(argv=None, *, precision_study=False):
                         # Legacy callbacks use global mp; retain one scoped precision
                         # through assembly and diagnostics and restore it afterwards.
                         scope = mp.workdps(precision) if options.arithmetic == "mpmath" else nullcontext()
-                        with scope, redirect_stdout(log):
+                        output = _Tee(log, sys.stdout) if options.verbosity else log
+                        with scope, redirect_stdout(output):
                             data, arithmetic = (_legacy(case, run_options, N, precision)
                                                 if options.solver == "legacy_collocation" else
                                                 _common(case, run_options, N, precision, order))

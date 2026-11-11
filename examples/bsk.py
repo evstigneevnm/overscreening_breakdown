@@ -16,7 +16,8 @@ def make_problem():
     )
 
 
-def run(*, solver="galerkin", use_mpmath=False, precision=50, problem=None):
+def run(*, solver="galerkin", use_mpmath=False, precision=50, problem=None,
+        verbosity=0, progress_callback=None, progress_interval=1.0):
     problem = make_problem() if problem is None else problem
     # The Gaussian source requires quadrature refinement independently of
     # Newton accuracy. This bounded example requests a separate consistency
@@ -24,7 +25,9 @@ def run(*, solver="galerkin", use_mpmath=False, precision=50, problem=None):
     quadrature = (dict(quadrature_atol="1e-12", quadrature_rtol="1e-12")
                   if solver == "galerkin" else {})
     solution = solve(problem, 8, solver=solver, use_mpmath=use_mpmath,
-                     precision=precision, tolerance=tolerance(use_mpmath, precision), **quadrature)
+                     precision=precision, tolerance=tolerance(use_mpmath, precision),
+                     verbosity=verbosity, progress_callback=progress_callback,
+                     progress_interval=progress_interval, **quadrature)
     if not solution.converged:
         raise RuntimeError("The BSK example failed its nonlinear or quadrature check")
     return solution
@@ -39,7 +42,7 @@ def main(argv=None):
     for use_mpmath in backend_choices(options.backend):
         for method in methods:
             solution = run(solver=method, problem=problem, use_mpmath=use_mpmath,
-                           precision=options.precision)
+                           precision=options.precision, verbosity=options.verbosity)
             report(solution)
             print("u(0)={}, delta={}".format(solution.u(0), solution.physical.delta))
             if method == "galerkin":

@@ -1,8 +1,6 @@
 """Common physical-problem entry point for collocation and mixed Galerkin."""
 
 from dataclasses import dataclass, replace
-from contextlib import nullcontext, redirect_stdout
-import io
 from numbers import Integral
 from pathlib import Path
 
@@ -18,6 +16,7 @@ from overscreening_breakdown.problems.flux import BoundFluxProblem
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.galerkin.solution import GalerkinSolution
 from overscreening_breakdown.initialization import validate_initializer
+from overscreening_breakdown.diagnostics import ProgressReporter
 
 
 @dataclass(frozen=True)
@@ -130,9 +129,10 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
           method="newton", tolerance="1e-10", initial_guess=None,
           max_iterations=50, use_globalization=True, globalization_init="1",
           quadrature_order=None, subdivisions=1, quadrature_atol=None,
-          quadrature_rtol=None, max_refinements=3, verbose=False,
+          quadrature_rtol=None, max_refinements=3, verbosity=0,
           initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200,
-          newton_fallback=None, adjoint_max_steps=20):
+          newton_fallback=None, adjoint_max_steps=20,
+          progress_callback=None, progress_interval=1.0):
     """Solve an unbound physical problem and return an evaluable solution.
 
     Collocation supports epsilon=1 and its existing method/boundary families.
@@ -155,7 +155,63 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
     ``newton_fallback='adjoint'`` enables native merit descent after a failed
     Newton step, with at most ``adjoint_max_steps`` accepted recoveries per stage.
     ``use_globalization`` controls homotopy; Newton backtracking remains active.
+
+    ``verbosity`` selects quiet (0), phase summaries (1), iteration/evaluation
+    progress (2), or detailed trials (3). ``progress_callback(event)`` receives
+    immutable native-precision observations independently of text verbosity.
+    Frequent evaluation/trial text uses ``progress_interval`` seconds; phase
+    transitions and final outcomes are unthrottled. Reporting does not change
+    numerical tolerances or introduce additional numerical evaluations.
     """
+    progress = ProgressReporter(
+        verbosity=verbosity, progress_callback=progress_callback,
+        solver=solver, method=method, progress_interval=progress_interval,
+    )
+    try:
+        result = _solve(
+            problem, N, solver=solver, L=L, use_mpmath=use_mpmath, precision=precision,
+            method=method, tolerance=tolerance, initial_guess=initial_guess,
+            max_iterations=max_iterations, use_globalization=use_globalization,
+            globalization_init=globalization_init, quadrature_order=quadrature_order,
+            subdivisions=subdivisions, quadrature_atol=quadrature_atol,
+            quadrature_rtol=quadrature_rtol, max_refinements=max_refinements,
+            initializer=initializer, initializer_tolerance=initializer_tolerance,
+            initializer_max_evaluations=initializer_max_evaluations,
+            newton_fallback=newton_fallback, adjoint_max_steps=adjoint_max_steps,
+            progress=progress,
+        )
+        diagnostic = result.newton_result or result.scipy_result
+        info = {}
+        if diagnostic is not None:
+            info.update(reason=diagnostic.reason, residual_norm=diagnostic.residual_norm,
+                        homotopy=diagnostic.homotopy)
+            if result.scipy_result is not None:
+                info.update(target_norm=diagnostic.target_norm,
+                            scipy_success=diagnostic.scipy_success, status=diagnostic.status)
+            elif diagnostic.stages:
+                info["target_norm"] = diagnostic.stages[-1].target_norm
+        if result.nonlinear_converged and result.quadrature_converged is False:
+            info["reason"] = "quadrature_not_converged"
+        progress.emit(
+            "solve_end", converged=result.converged,
+            nonlinear_converged=result.nonlinear_converged,
+            quadrature_converged=result.quadrature_converged,
+            norm="rms" if solver == "collocation" else "euclidean", **info,
+        )
+        return result
+    except BaseException as error:
+        progress.emit(
+            "solve_interrupted" if isinstance(error, KeyboardInterrupt) else "solve_error",
+            error_type=type(error).__name__, reason=str(error),
+        )
+        raise
+
+
+def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
+           initial_guess, max_iterations, use_globalization, globalization_init,
+           quadrature_order, subdivisions, quadrature_atol, quadrature_rtol,
+           max_refinements, initializer, initializer_tolerance,
+           initializer_max_evaluations, newton_fallback, adjoint_max_steps, progress):
     if solver not in ("collocation", "galerkin"):
         raise ValueError("solver must be collocation or galerkin")
     methods = ("newton", "root", "root_no_jac", "nonlin_solve")
@@ -179,15 +235,27 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
             or max_iterations < 0):
         raise ValueError("max_iterations must be a nonnegative integer")
     arithmetic = MpmathArithmetic(precision) if use_mpmath else NumpyArithmetic()
-    physical = _bind(problem, arithmetic)
+    # Set the formatter's owner once, before the first numerical event.
+    progress.arithmetic = arithmetic
     tolerance = arithmetic.scalar(tolerance)
     if not arithmetic.isfinite(tolerance) or tolerance <= 0:
         raise ValueError("tolerance must be finite and strictly positive")
+    progress.emit("solve_start", N=int(N), precision=arithmetic.dps,
+                  backend=arithmetic.backend, arithmetic="mpmath" if use_mpmath else "numpy",
+                  tolerance=tolerance, use_globalization=use_globalization,
+                  initializer=initializer, newton_fallback=newton_fallback)
+    with progress.phase("problem_binding"):
+        physical = _bind(problem, arithmetic)
+    unknowns = 2*int(N)-1 if solver == "galerkin" else int(N)+sum(
+        value is not None for row in physical.boundary_conditions for value in row)
+    progress.emit("problem_ready", unknown_count=unknowns,
+                  norm="rms" if solver == "collocation" else "euclidean")
     if isinstance(initial_guess, (str, Path)):
         from overscreening_breakdown.solution_io import load_solution
-        initial_guess = load_solution(initial_guess, problem=problem, solver=solver,
-                                      use_mpmath=use_mpmath,
-                                      precision=precision if use_mpmath else None)
+        with progress.phase("restart_loading"):
+            initial_guess = load_solution(initial_guess, problem=problem, solver=solver,
+                                          use_mpmath=use_mpmath,
+                                          precision=precision if use_mpmath else None)
     initial_guess = _initial_coefficients(initial_guess, physical, N, L, solver)
     if solver == "collocation":
         from overscreening_breakdown.collocation.spectral1d import solve_nonlinear_problem
@@ -208,6 +276,7 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
                 initializer=initializer, initializer_tolerance=initializer_tolerance,
                 initializer_max_evaluations=int(initializer_max_evaluations),
                 newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
+                _reporter=progress.bind(norm="rms"),
             )
             native_initial = None
             if initial_guess is not None:
@@ -215,9 +284,8 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
                                   arithmetic.vector(initial_guess))
                 if len(native_initial) != legacy._M:
                     raise ValueError("initial coefficient count does not match the collocation basis")
-            with nullcontext() if verbose else redirect_stdout(io.StringIO()):
-                coefficients = tuple(arithmetic.scalar(value)
-                                     for value in legacy.solve_problem(native_initial))
+            coefficients = tuple(arithmetic.scalar(value)
+                                 for value in legacy.solve_problem(native_initial))
             result = _owned_newton_result(legacy.get_newton_result(), arithmetic, coefficients)
             initialization = legacy.get_initialization_result()
             if initialization is not None:
@@ -237,16 +305,21 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
     if (isinstance(max_refinements, bool) or not isinstance(max_refinements, Integral)
             or max_refinements < 0):
         raise ValueError("max_refinements must be a nonnegative integer")
-    basis = GalerkinBasis(int(N), arithmetic, L)
+    progress = progress.bind(norm="euclidean")
+    with progress.phase("basis"):
+        basis = GalerkinBasis(int(N), arithmetic, L)
     order = 2*int(N) if quadrature_order is None else quadrature_order
     raw_interfaces = getattr(getattr(problem, "epsilon", None), "interfaces", physical.epsilon.interfaces)
-    plan = QuadratureFactory(arithmetic, L=L, interfaces=raw_interfaces).plan(order, subdivisions)
+    with progress.phase("quadrature", order=order, subdivisions=subdivisions):
+        plan = QuadratureFactory(arithmetic, L=L, interfaces=raw_interfaces).plan(order, subdivisions)
     # Bind once: all refinement systems must retain this exact snapshot.
-    assembly = GalerkinAssembly._from_snapshot(physical, basis, plan)
+    assembly = GalerkinAssembly._from_snapshot(physical, basis, plan, progress=progress)
     if callable(initial_guess):
-        initial_guess = _project_initial_u(assembly, initial_guess)
+        with progress.phase("initial_projection"):
+            initial_guess = _project_initial_u(assembly, initial_guess)
     elif initial_guess is None and physical._initial_guess is not None:
-        initial_guess = _project_initial_u(assembly, physical._initial_guess)
+        with progress.phase("initial_projection"):
+            initial_guess = _project_initial_u(assembly, physical._initial_guess)
     atol = tolerance if quadrature_atol is None else arithmetic.scalar(quadrature_atol)
     rtol = tolerance if quadrature_rtol is None else arithmetic.scalar(quadrature_rtol)
     if (not arithmetic.isfinite(atol) or not arithmetic.isfinite(rtol) or atol < 0 or rtol < 0):
@@ -259,14 +332,25 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
             max_iterations=max_iterations, use_globalization=use_globalization,
             globalization_init=globalization_init,
             newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
+            progress=progress.bind(refinement=refinement, order=assembly.plan.order,
+                                   subdivisions=assembly.plan.subdivisions),
         )
         if not result.converged:
             history.append(QuadratureIteration(assembly.plan.order, assembly.plan.subdivisions,
                                                False, False, reason=result.reason,
                                                newton_result=result))
             break
-        check = assembly.check_refinement(result.state, atol=atol, rtol=rtol)
+        with progress.phase("quadrature_verification", refinement=refinement) as check_progress:
+            check = assembly.check_refinement(result.state, atol=atol, rtol=rtol,
+                                             progress=check_progress)
         checked = check.converged
+        progress.emit(
+            "quadrature_check", refinement=refinement, order=assembly.plan.order,
+            subdivisions=assembly.plan.subdivisions, converged=checked,
+            residual_difference=check.residual_difference, residual_target=check.residual_target,
+            jacobian_difference=check.jacobian_difference, jacobian_target=check.jacobian_target,
+            jacobian_norm="frobenius",
+        )
         history.append(QuadratureIteration(
             assembly.plan.order, assembly.plan.subdivisions, True, checked,
             check.residual_difference, check.residual_target,

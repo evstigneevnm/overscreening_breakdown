@@ -42,6 +42,8 @@ def parser(description):
     result = argparse.ArgumentParser(description=description)
     result.add_argument("--backend", choices=("numpy", "mpmath", "both"), default="both")
     result.add_argument("--precision", type=int, default=50)
+    result.add_argument("--verbosity", type=int, choices=range(4), default=2,
+                        help="solver progress: 0 quiet, 1 phases, 2 steps, 3 trial details (default: 2)")
     result.add_argument("--output-dir", type=Path)
     return result
 

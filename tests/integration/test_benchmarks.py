@@ -16,6 +16,20 @@ from benchmarks.run_manufactured import main
 
 
 class BenchmarkRunnerTests(unittest.TestCase):
+    def test_requested_progress_is_live_and_retained_in_the_solver_log(self):
+        output = io.StringIO()
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            with redirect_stdout(output):
+                status = main(["--case", "rational:constant", "--N", "4",
+                               "--verbosity", "2", "--diagnostic-order", "12",
+                               "--output-dir", directory])
+            report = json.loads((Path(directory)/"results.json").read_text())
+        self.assertEqual(status, 0)
+        self.assertTrue(report["records"][0]["converged"])
+        for text in ("solve_start", "phase_start", "iteration_end", "solve_end"):
+            self.assertIn(text, output.getvalue())
+            self.assertIn(text, report["records"][0]["solver_log"])
+
     def run_study(self, arguments, *, precision_study=False):
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             output = Path(directory)

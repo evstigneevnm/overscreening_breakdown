@@ -36,6 +36,13 @@ otherwise the saved flags remain provenance rather than a new numerical
 certificate. Newton iteration objects and quadrature iteration histories are
 not serialized. Loading never changes global mpmath precision.
 
+Live progress events and reporting settings are also runtime-only. Changing
+`verbosity`, observing events, or loading an old snapshot does not change the
+JSON schema or its solver compatibility rules. Loading does not reconstruct
+a progress stream. Trusted legacy pickle imports retain their explicit
+geometry requirements; the removed `verbose` keyword is not restored by
+loading older data.
+
 The optional `initialization_result` (fsolve evaluation counts, status, residual
 norms, and candidate acceptance) is also runtime diagnostics only.
 The same applies to `scipy_result`: its SciPy stop status, message, evaluation

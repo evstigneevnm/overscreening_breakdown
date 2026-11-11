@@ -7,6 +7,7 @@ The Jacobian is the derivative of the residual: ``J * step = -residual``.
 """
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from typing import Callable, Optional
 
 
@@ -88,6 +89,7 @@ def solve_newton(
     callback=None,
     newton_fallback=None,
     adjoint_max_steps=20,
+    progress=None,
 ):
     """Solve the physical system at homotopy parameter zero.
 
@@ -113,6 +115,8 @@ def solve_newton(
     bounds accepted recovery steps per stage; ``iterations`` still counts
     Newton attempts only. Stationarity never certifies a nonzero residual.
     A non-Euclidean residual norm requires its matching merit_gradient callback.
+    ``progress`` is an internal scalar-event reporter. It is independent of
+    the accepted-state callback and never requests additional evaluations.
     """
     for name, value, minimum in (
         ("max_iterations", max_iterations, 0),
@@ -178,7 +182,19 @@ def solve_newton(
     total_adjoint_steps = total_adjoint_evaluations = 0
     recovery_reasons = []
 
+    def emit(kind, *, level=1, **data):
+        if progress is not None:
+            progress.emit(kind, level=level, **data)
+
+    def phase(name, **data):
+        return (progress.phase(name, level=3, **data)
+                if progress is not None else nullcontext())
+
     def result(converged, reason, norm):
+        emit("newton_end", converged=converged, reason=reason,
+             homotopy=q, residual_norm=norm, iterations=total_iterations,
+             adjoint_steps=total_adjoint_steps,
+             adjoint_evaluations=total_adjoint_evaluations)
         return NewtonResult(
             state.copy(), converged, reason, q, norm, total_iterations,
             tuple(stages), tuple(history),
@@ -186,11 +202,14 @@ def solve_newton(
         )
 
     for stage_index in range(max_stages):
+        emit("stage_start", stage=stage_index+1, homotopy=q)
         residual, norm = evaluate(state, q)
         initial_norm = norm
         target = atol + rtol * norm if finite(norm) else atol
         if not finite(target):
             raise ValueError("residual tolerance overflowed in the selected arithmetic")
+        emit("stage_residual", level=2, stage=stage_index+1,
+             homotopy=q, residual_norm=norm, target_norm=target)
         stage_iterations = 0
         stage_adjoint_steps = stage_adjoint_evaluations = 0
         stage_recovery_reasons = []
@@ -205,9 +224,14 @@ def solve_newton(
                 total_iterations += 1
                 failure = None
                 jacobian = None
+                emit("iteration_start", level=2, stage=stage_index+1,
+                     iteration=total_iterations, homotopy=q,
+                     residual_norm=norm, target_norm=target, step_kind="newton")
                 try:
                     try:
-                        jacobian = system.jacobian(state, q)
+                        with phase("jacobian", stage=stage_index+1,
+                                   iteration=total_iterations, homotopy=q):
+                            jacobian = system.jacobian(state, q)
                     except OverflowError:
                         reason = "nonfinite_jacobian"
                         break
@@ -217,7 +241,9 @@ def solve_newton(
                     # Recovery needs the original derivative even when a
                     # supplied linear solver factors its input in place.
                     linear_matrix = jacobian.copy() if newton_fallback == "adjoint" else jacobian
-                    step = system.solve_linear(linear_matrix, -residual)
+                    with phase("linear_solve", stage=stage_index+1,
+                               iteration=total_iterations, homotopy=q):
+                        step = system.solve_linear(linear_matrix, -residual)
                 except LinearSolveError:
                     failure = "linear_solve_failed"
                 if failure is None and not finite_vector(step):
@@ -239,9 +265,19 @@ def solve_newton(
                             stage_index + 1, total_iterations, q, norm, weight, backtracks
                         )
                         history.append(record)
+                        emit("iteration_end", level=2, stage=stage_index+1,
+                             iteration=total_iterations, homotopy=q,
+                             residual_norm=norm, target_norm=target,
+                             weight=weight, backtracks=backtracks, step_kind="newton")
                         if callback is not None:
                             callback(state.copy(), record)
                         break
+                    emit("trial_rejected", level=3, throttle=True, stage=stage_index+1,
+                         iteration=total_iterations, homotopy=q,
+                         residual_norm=candidate_norm, target_norm=target,
+                         weight=weight, backtracks=backtracks, step_kind="newton",
+                         reason="nonfinite_residual" if candidate_residual is None
+                         else "insufficient_decrease")
                     weight *= half
 
                 if not accepted:
@@ -255,16 +291,39 @@ def solve_newton(
                     from overscreening_breakdown.nonlinear_globalization import adjoint_step
                     stage_recovery_reasons.append(failure)
                     recovery_reasons.append(failure)
+                    emit("recovery_start", stage=stage_index+1,
+                         iteration=total_iterations, homotopy=q,
+                         residual_norm=norm, target_norm=target,
+                         reason=failure, step_kind="adjoint")
+
+                    def evaluate_recovery(candidate, parameter):
+                        values, candidate_norm = evaluate(candidate, parameter)
+                        emit("trial_evaluation", level=3, throttle=True, stage=stage_index+1,
+                             iteration=total_iterations, homotopy=parameter,
+                             residual_norm=candidate_norm, target_norm=target,
+                             finite=values is not None, step_kind="adjoint")
+                        return values, candidate_norm
+
                     try:
                         recovery = adjoint_step(
                             system, state, residual, jacobian, q, residual_norm=norm,
-                            evaluate=evaluate, max_backtracks=max_backtracks, min_step=min_step,
+                            evaluate=evaluate_recovery, max_backtracks=max_backtracks,
+                            min_step=min_step,
                         )
                     except LinearSolveError:
                         reason = "adjoint_direction_failed"
+                        emit("recovery_end", stage=stage_index+1,
+                             iteration=total_iterations, homotopy=q,
+                             accepted=False, reason=reason, step_kind="adjoint")
                         break
                     stage_adjoint_evaluations += recovery.evaluations
                     total_adjoint_evaluations += recovery.evaluations
+                    emit("recovery_end", stage=stage_index+1,
+                         iteration=total_iterations, homotopy=q,
+                         accepted=recovery.accepted, reason=recovery.reason,
+                         residual_norm=recovery.residual_norm, target_norm=target,
+                         weight=recovery.step, backtracks=recovery.backtracks,
+                         evaluations=recovery.evaluations, step_kind="adjoint")
                     if not recovery.accepted:
                         reason = recovery.reason
                         break
@@ -278,6 +337,11 @@ def solve_newton(
                         evaluations=recovery.evaluations,
                     )
                     history.append(record)
+                    emit("iteration_end", level=2, stage=stage_index+1,
+                         iteration=total_iterations, homotopy=q,
+                         residual_norm=norm, target_norm=target,
+                         weight=recovery.step, backtracks=recovery.backtracks,
+                         step_kind="adjoint", reason=failure)
                     if callback is not None:
                         callback(state.copy(), record)
                 converged = norm <= target
@@ -287,6 +351,11 @@ def solve_newton(
             q, initial_norm, target, norm, stage_iterations, converged, reason,
             stage_adjoint_steps, stage_adjoint_evaluations, tuple(stage_recovery_reasons),
         ))
+        emit("stage_end", stage=stage_index+1, homotopy=q,
+             converged=converged, reason=reason, residual_norm=norm,
+             target_norm=target, iterations=stage_iterations,
+             adjoint_steps=stage_adjoint_steps,
+             adjoint_evaluations=stage_adjoint_evaluations)
         if converged and q == zero:
             return result(True, "converged", norm)
         if not use_globalization:
@@ -301,10 +370,16 @@ def solve_newton(
         if not finite(next_q):
             return result(False, "nonfinite_homotopy", norm)
         if not converged:
+            emit("restart_start", stage=stage_index+2, homotopy=next_q,
+                 previous_homotopy=q, reason=reason)
             if system.restart is None:
                 state = system.initial_guess().copy()
             else:
                 state = system.restart(state.copy(), next_q).copy()
+            emit("restart_end", stage=stage_index+2, homotopy=next_q)
+        else:
+            emit("homotopy_transition", stage=stage_index+2,
+                 previous_homotopy=q, homotopy=next_q)
         q = next_q
 
     raise AssertionError("unreachable continuation state")

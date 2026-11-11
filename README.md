@@ -56,6 +56,12 @@ Both solvers can enable native adjoint recovery with `newton_fallback="adjoint"`
 including mpmath runs. Initialization, adjoint steps, and homotopy have separate
 controls and diagnostics; see the [public API guide](docs/public_api.md).
 
+Set `verbosity=2` on either solver for live phase and iteration diagnostics,
+or `0` for quiet library calls. Notebook helpers and example command lines
+default to level 2; scripts accept `--verbosity 0` through `--verbosity 3`.
+The old `verbose` keyword has been removed. Structured `progress_callback`
+events retain native numerical precision independently of console output.
+
 - [Numerical methods, problem definitions, and manufactured catalog](docs/numerical_methods.md)
 - [Saved solutions, explicit projection, and restart compatibility](docs/saved_solutions.md)
 - [Installation, development, testing, and distribution builds](docs/installation.md)

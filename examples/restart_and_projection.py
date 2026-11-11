@@ -12,14 +12,17 @@ else:
     from _common import backend_choices, parser, report, tolerance, write_outputs
 
 
-def run(directory, *, use_mpmath=True, precision=50):
+def run(directory, *, use_mpmath=True, precision=50, verbosity=0,
+        progress_callback=None, progress_interval=1.0):
     """Return the collocation source and the restored two-field solution."""
     directory = Path(directory).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
     case = rational_case(nonlinear=True, beta="0.1", initial="exp")
     problem = case.make_problem()
     target = tolerance(use_mpmath, precision)
-    options = dict(use_mpmath=use_mpmath, precision=precision, tolerance=target)
+    options = dict(use_mpmath=use_mpmath, precision=precision, tolerance=target,
+                   verbosity=verbosity, progress_callback=progress_callback,
+                   progress_interval=progress_interval)
     source = solve(problem, 8, solver="collocation", **options)
     if not source.converged:
         raise RuntimeError("The collocation source did not converge")
@@ -51,10 +54,12 @@ def main(argv=None):
         backend = "mpmath" if use_mpmath else "numpy"
         if options.output_dir is None:
             with tempfile.TemporaryDirectory(prefix="overscreening-restart-", dir="/tmp") as directory:
-                run(directory, use_mpmath=use_mpmath, precision=options.precision)
+                run(directory, use_mpmath=use_mpmath, precision=options.precision,
+                    verbosity=options.verbosity)
         else:
             directory = options.output_dir/backend
-            _, restored = run(directory, use_mpmath=use_mpmath, precision=options.precision)
+            _, restored = run(directory, use_mpmath=use_mpmath, precision=options.precision,
+                              verbosity=options.verbosity)
             write_outputs(restored, directory, "restored-galerkin")
 
 

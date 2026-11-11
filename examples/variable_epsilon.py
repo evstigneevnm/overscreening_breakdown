@@ -18,7 +18,7 @@ def make_case(coefficient="smooth"):
 
 
 def run(*, use_mpmath=False, precision=50, coefficient="smooth", problem=None,
-        max_refinements=3):
+        max_refinements=3, verbosity=0, progress_callback=None, progress_interval=1.0):
     """Return an evaluable mixed solution using declared coefficient interfaces."""
     case = make_case(coefficient)
     solution = solve(case.make_problem() if problem is None else problem,
@@ -28,7 +28,9 @@ def run(*, use_mpmath=False, precision=50, coefficient="smooth", problem=None,
                      # At N=16 the float64 residual comparison reaches an
                      # assembly-roundoff floor around 1e-11. Keep the Newton
                      # target separate from this quadrature consistency target.
-                     quadrature_atol="1e-9" if coefficient == "jump" and not use_mpmath else None)
+                     quadrature_atol="1e-9" if coefficient == "jump" and not use_mpmath else None,
+                     verbosity=verbosity, progress_callback=progress_callback,
+                     progress_interval=progress_interval)
     if not solution.converged:
         raise RuntimeError("The variable-epsilon example failed its nonlinear or quadrature check")
     return solution
@@ -42,7 +44,7 @@ def main(argv=None):
     problem = case.make_problem()
     for use_mpmath in backend_choices(options.backend):
         solution = run(problem=problem, use_mpmath=use_mpmath, precision=options.precision,
-                       coefficient=options.coefficient)
+                       coefficient=options.coefficient, verbosity=options.verbosity)
         report(solution, sampled_error(solution, case))
         print("epsilon interfaces: {}".format(solution.physical.epsilon.interfaces))
         if options.output_dir is not None:

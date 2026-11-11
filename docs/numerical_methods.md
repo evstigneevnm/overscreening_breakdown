@@ -357,6 +357,70 @@ The caller must supply integrable fields: a finite quadrature value does not
 establish integrability on the half-line. A collocation polynomial with a
 nonzero value at infinity is outside physical L2/H1 until explicitly corrected.
 
+### Live progress reporting
+
+The common `solve` entry point accepts `verbosity=0`,
+`progress_callback=None`, and `progress_interval=1.0`. The same reporting
+controls apply to collocation, mixed Galerkin, NumPy, mpmath, initialization,
+Newton, adjoint recovery, homotopy and quadrature refinement. The old
+`verbose` argument is removed without an alias.
+
+Level 0 emits no solver progress text. Level 1 reports the solve description,
+major phases and stages, refinement decisions, and final outcome. Level 2
+adds accepted Newton/adjoint steps and periodic SciPy evaluation progress.
+Level 3 adds trial rejection, backtracking, recovery reasons, Jacobian
+construction, and linear-solve phases. Notebook helpers and example command
+lines select level 2; ordinary library calls and example `run()` functions
+default to level 0.
+
+Starts are emitted before expensive work, including quadrature construction,
+matrix assembly, initialization, Jacobian construction and linear solving.
+Completions carry elapsed times. A blocking factorization can report its start
+and completion; intermediate progress requires support from that operation.
+Frequent evaluation/trial text is limited by `progress_interval` seconds,
+while phase changes and final outcomes are unthrottled. Output is flushed
+during execution so notebooks can display it before the solve returns.
+
+Events identify the solver and method and retain their numerical scalars in
+the active arithmetic. Collocation residuals are labelled RMS; mixed residuals
+are Euclidean. Both display their actual acceptance target and homotopy
+parameter where relevant. A successful continuation stage is distinct from
+final convergence at `q=0`. Galerkin reports nonlinear and quadrature
+convergence separately, including refinement differences and targets. SciPy's
+stop status and independently verified residual outcome remain separate.
+
+HYBR and `fsolve` do not provide accepted-iteration callbacks. Their progress
+therefore reports evaluated residuals and function/Jacobian call counts;
+these events do not claim accepted Newton steps. Reporting reuses computed
+values and does not introduce additional residual, Jacobian or quadrature
+evaluations, change tolerances, or alter numerical acceptance decisions.
+Live evaluation counters count actual wrapped calls; the returned
+`scipy_result.nfev` and `njev` are SciPy-reported counts and can differ because
+SciPy versions account for preflight calls differently.
+Text uses a compact number of significant digits; mpmath values are formatted
+through their arithmetic owner without an intermediate `float` conversion.
+
+An observer passed as `progress_callback(event)` receives immutable
+`ProgressEvent` values even at `verbosity=0`. Fields are `kind`, `level`,
+`solver`, `method`, `elapsed`, and a read-only `data` mapping. The mapping
+contains native numerical scalars and immutable metadata, never mutable
+coefficient arrays, matrices, problem objects or arithmetic contexts. An
+observer can collect events for a residual plot or write its own log; the
+solver does not retain every trial event by default. Existing numerical
+histories retain their established meanings.
+
+The shared Newton driver's accepted-state callback keeps its separate
+contract. Progress observers do not control iteration acceptance. Observer
+exceptions propagate as `ProgressCallbackError` with the original exception
+as their cause, so an observer overflow cannot be mistaken for numerical
+overflow in the solver. Quiet reporting does not suppress user-callback
+output, ordinary warnings or exceptions, and does not replace process-wide
+`sys.stdout` or configure global logging handlers.
+
+Benchmark command lines accept `--verbosity 0` through `--verbosity 3` and
+default to 0. Enabled solver text streams during each run and is also retained
+in its `solver_log` result field.
+
 ### Newton recovery and initialization
 
 The default nonlinear iteration remains damped Newton. Optional controls act

@@ -142,7 +142,7 @@ class SolverDispatchTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             first.u(1)
 
-    def test_initial_field_callbacks_are_projected_and_verbose_is_explicit(self):
+    def test_initial_field_callbacks_are_projected_and_the_default_is_quiet(self):
         calls = []
         def initial(x, a):
             calls.append(x)

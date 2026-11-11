@@ -11,6 +11,12 @@ python -m examples.restart_and_projection --backend both
 python -m examples.bsk --solver both --backend both
 ```
 
+The command lines display live solver progress at `--verbosity 2`. Use
+`--verbosity 0` for quiet solver output, `1` for phase summaries, or `3` for
+trial and linear-solve details. Final example data reports still appear at
+level 0. The Python `run()` functions default to `verbosity=0` and also accept
+`progress_callback` and `progress_interval` when embedding an example.
+
 Each script returns native solution objects from the common `solve` entry point.
 Both nonlinear and quadrature convergence flags are reported. Collocation has
 no quadrature convergence check, so that flag is `None`. Galerkin stores
@@ -66,6 +72,15 @@ collocation. The 120-digit experiment explicitly uses `initializer=None`.
 solver and arithmetic. A bounded comparison reports actual recovery counts,
 which can be zero when Newton succeeds directly. `use_globalization` retains
 its independent homotopy meaning.
+
+The three ordinary notebook `run_collocation()` helpers default to
+`verbosity=2` and forward `progress_callback` and `progress_interval`. Set
+`verbosity=0` on an individual solve or in the helper default to suppress
+live solver text during a large sweep. Direct restarts and the bounded
+collocation/Galerkin comparison also select live reporting. The former
+notebook `status()` printer is removed; the shared reporter prints the final
+outcome. Inspect `result.initialization_result`, `result.newton_result`, or
+`result.scipy_result` directly for additional full-precision diagnostics.
 
 Unsupported delta-zero plus third-derivative wall-data sweeps live separately
 in [`legacy_boundary_experiments.ipynb`](../experiments/notebooks/legacy_boundary_experiments.ipynb)

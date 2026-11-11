@@ -23,6 +23,8 @@ PUBLIC_EXPORTS = {
     "MpmathArithmetic": ("arithmetic", "MpmathArithmetic"),
     "QuadratureFactory": ("quadrature", "QuadratureFactory"),
     "QuadraturePlan": ("quadrature", "QuadraturePlan"),
+    "ProgressEvent": ("diagnostics", "ProgressEvent"),
+    "ProgressCallbackError": ("diagnostics", "ProgressCallbackError"),
     "solve": ("solvers", "solve"),
     "load_solution": ("solvers", "load_solution"),
     "load_legacy_collocation": ("solvers", "load_legacy_collocation"),

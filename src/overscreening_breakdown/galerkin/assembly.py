@@ -9,6 +9,7 @@ This module supplies a discrete system to the shared Newton driver; solver
 dispatch, physical error norms and mixed solution persistence are separate.
 """
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 import math
 from numbers import Integral
@@ -62,7 +63,7 @@ class GalerkinAssembly:
     plan: Any = field(repr=False)
     physical: BoundFluxProblem = field(repr=False)
 
-    def __init__(self, problem, basis, plan):
+    def __init__(self, problem, basis, plan, *, progress=None):
         if not isinstance(basis, GalerkinBasis):
             raise TypeError("basis must be a GalerkinBasis")
         basis.check_precision()
@@ -74,7 +75,7 @@ class GalerkinAssembly:
         physical = bind(basis.arithmetic)
         if not isinstance(physical, BoundFluxProblem):
             raise TypeError("problem.bind must return a BoundFluxProblem")
-        self._initialize(physical, basis, plan)
+        self._initialize(physical, basis, plan, progress=progress)
 
     @property
     def arithmetic(self):
@@ -98,7 +99,15 @@ class GalerkinAssembly:
                  else math.fsum(values))
         return self._finite(value, "mixed assembly sum")
 
-    def _initialize(self, physical, basis, plan):
+    def _initialize(self, physical, basis, plan, *, progress=None):
+        object.__setattr__(self, "_progress", progress)
+        scope = (progress.phase("assembly", order=plan.order,
+                                subdivisions=plan.subdivisions,
+                                nodes=len(plan.nodes)) if progress is not None else nullcontext())
+        with scope:
+            self._initialize_numerical(physical, basis, plan)
+
+    def _initialize_numerical(self, physical, basis, plan):
         physical.check_precision()
         object.__setattr__(self, "basis", basis)
         object.__setattr__(self, "plan", plan)
@@ -107,7 +116,10 @@ class GalerkinAssembly:
             raise ValueError("physical problem and basis must share one arithmetic owner")
         if not isinstance(plan, QuadraturePlan):
             raise TypeError("plan must be a QuadraturePlan from QuadratureFactory")
-        object.__setattr__(self, "table", basis.tabulate(plan))
+        scope = (self._progress.phase("basis_tabulation", level=3)
+                 if self._progress is not None else nullcontext())
+        with scope:
+            object.__setattr__(self, "table", basis.tabulate(plan))
         self._validate_plan()
         if physical.domain != (self.arithmetic.scalar(0), self.arithmetic.inf):
             raise ValueError("mixed Galerkin assembly supports the half-line [0, infinity) only")
@@ -138,7 +150,10 @@ class GalerkinAssembly:
         object.__setattr__(self, "_epsilon_ratios", ratios)
         object.__setattr__(self, "_lift_values", tuple(self.lift.value(y) for y in plan.nodes))
         object.__setattr__(self, "_lift_derivatives", tuple(self.lift.dx(y) for y in plan.nodes))
-        self._assemble_constant_terms(left[3])
+        scope = (self._progress.phase("constant_blocks", level=3)
+                 if self._progress is not None else nullcontext())
+        with scope:
+            self._assemble_constant_terms(left[3])
 
     def _validate_plan(self):
         # Plans are public dataclasses. Check their mathematical contract as
@@ -190,11 +205,11 @@ class GalerkinAssembly:
         self.physical.check_precision()
 
     @classmethod
-    def _from_snapshot(cls, physical, basis, plan):
+    def _from_snapshot(cls, physical, basis, plan, *, progress=None):
         """Internal reuse of a stamped bound snapshot without rebinding callbacks."""
         physical.check_precision()
         result = object.__new__(cls)
-        result._initialize(physical, basis, plan)
+        result._initialize(physical, basis, plan, progress=progress)
         return result
 
     def _assemble_constant_terms(self, q_b):
@@ -375,18 +390,25 @@ class GalerkinAssembly:
             adjoint_direction=self.adjoint_direction,
         )
 
-    def with_plan(self, plan):
+    def with_plan(self, plan, *, progress=None):
         """Build a new fixed system, retaining the same physical snapshot."""
         self.check_precision()
-        return type(self)._from_snapshot(self.physical, self.basis, plan)
+        return type(self)._from_snapshot(self.physical, self.basis, plan,
+                                        progress=self._progress if progress is None else progress)
 
-    def refined(self, order_factor=2, subdivisions_factor=1):
+    def refined(self, order_factor=2, subdivisions_factor=1, *, progress=None):
         """Reassemble on a refined plan; existing coefficients remain valid."""
         self.check_precision()
-        return self.with_plan(self.plan.refined(order_factor, subdivisions_factor))
+        progress = self._progress if progress is None else progress
+        scope = (progress.phase("quadrature", order=self.plan.order*order_factor,
+                                subdivisions=self.plan.subdivisions*subdivisions_factor)
+                 if progress is not None else nullcontext())
+        with scope:
+            plan = self.plan.refined(order_factor, subdivisions_factor)
+        return self.with_plan(plan, progress=progress)
 
     def check_refinement(self, coefficients, *, atol, rtol, q=0,
-                         order_factor=2, subdivisions_factor=1):
+                         order_factor=2, subdivisions_factor=1, progress=None):
         """Compare R and DR on two plans at the same fixed state and q."""
         _, _, state = self._state(coefficients)
         q = self._parameter(q)
@@ -395,7 +417,7 @@ class GalerkinAssembly:
         if atol < 0 or rtol < 0:
             raise ValueError("refinement tolerances must be nonnegative")
         state = self.arithmetic.vector(state)
-        refined = self.refined(order_factor, subdivisions_factor)
+        refined = self.refined(order_factor, subdivisions_factor, progress=progress)
         residual, fine_residual = self.residual(state, q), refined.residual(state, q)
         jacobian, fine_jacobian = self.jacobian(state, q), refined.jacobian(state, q)
         residual_difference = self._finite(self.arithmetic.norm(fine_residual-residual),

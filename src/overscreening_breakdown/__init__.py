@@ -19,6 +19,8 @@ _EXPORTS = {
     "MpmathArithmetic": (".arithmetic", "MpmathArithmetic"),
     "QuadratureFactory": (".quadrature", "QuadratureFactory"),
     "QuadraturePlan": (".quadrature", "QuadraturePlan"),
+    "ProgressEvent": (".diagnostics", "ProgressEvent"),
+    "ProgressCallbackError": (".diagnostics", "ProgressCallbackError"),
     "solve": (".solvers", "solve"),
     "save_solution": (".solution_io", "save_solution"),
     "load_solution": (".solvers", "load_solution"),

@@ -13,6 +13,7 @@ from overscreening_breakdown.rational_mapping import RationalHalfLineMap
 from overscreening_breakdown.initialization import initialize_fsolve, validate_initializer
 from overscreening_breakdown.collocation.globalization import CollocationMeritGeometry
 from overscreening_breakdown.scipy_solver import verify_scipy_result
+from overscreening_breakdown.diagnostics import ProgressReporter
 
 
 class basis_functions(object):
@@ -857,7 +858,7 @@ class collocation_discretization(basic_discretization):
 
 
 class solve_nonlinear_problem(collocation_discretization):
-    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, *, initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200, newton_fallback=None, adjoint_max_steps=20):
+    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, *, initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200, newton_fallback=None, adjoint_max_steps=20, verbosity=0, progress_callback=None, progress_interval=1.0, _reporter=None):
         validate_initializer(initializer, use_mpmath=use_mpmath,
                              tolerance=initializer_tolerance,
                              max_evaluations=initializer_max_evaluations)
@@ -873,6 +874,14 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__initializer_max_evaluations = int(initializer_max_evaluations)
         self.__newton_fallback = newton_fallback
         self.__adjoint_max_steps = int(adjoint_max_steps)
+        self.__owns_reporter = _reporter is None
+        self.__reporter_options = dict(verbosity=verbosity, progress_callback=progress_callback,
+                                      progress_interval=progress_interval)
+        self.__reporting_arithmetic = (MpmathArithmetic(prec) if use_mpmath
+                                       else NumpyArithmetic())
+        self.__progress = (_reporter if _reporter is not None else ProgressReporter(
+            arithmetic=self.__reporting_arithmetic, solver="collocation", method=use_method,
+            **self.__reporter_options)).bind(norm="rms")
         if problem is not None and domain is None:
             problem = prepare_collocation_problem(problem, use_mpmath=use_mpmath, prec=prec)
         if domain != None and problem == None:
@@ -1016,7 +1025,9 @@ class solve_nonlinear_problem(collocation_discretization):
         if self.__use_mpmath and not isinstance(problem, CollocationProblemAdapter):
             self.__problem.set_use_mp_math(self.__mp_ref)
         self.__set_boundary_conditoins_on_domain(self.__problem.get_boundary_conditions() )
-        self.__form_matrices()
+        with self.__progress.phase("collocation_assembly", level=1,
+                                   N=self._N, unknown_count=self._M):
+            self.__form_matrices()
 
     def residual_L2_norm(self, c):
         relnorm = self.__norm(self.__residual_operator(c))/self.__sqrt(self._M)
@@ -1027,25 +1038,52 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__newton_result = None
         self.__initialization_result = None
         self.__scipy_result = None
+        try:
+            if self.__owns_reporter:
+                self.__progress = ProgressReporter(
+                    arithmetic=self.__reporting_arithmetic, solver="collocation",
+                    method=self.__use_method, **self.__reporter_options).bind(norm="rms")
+                self.__progress.emit(
+                    "solve_start", N=self._N, unknown_count=self._M,
+                    arithmetic="mpmath" if self.__use_mpmath else "numpy",
+                    backend=self.__reporting_arithmetic.backend,
+                    precision=self.__reporting_arithmetic.dps)
+            coefficients = self.__solve_problem(c0)
+        except BaseException as error:
+            if self.__owns_reporter:
+                self.__progress.emit("solve_error", converged=False,
+                                     error_type=type(error).__name__, message=str(error))
+            raise
+        if self.__owns_reporter:
+            diagnostics = self.__newton_result or self.__scipy_result
+            self.__progress.emit(
+                "solve_end", converged=self.__converged,
+                nonlinear_converged=self.__converged,
+                residual_norm=self.__final_residual_norm,
+                reason=getattr(diagnostics, "reason", "converged" if self.__converged
+                               else "not_converged"),
+                homotopy=self.__reporting_arithmetic.scalar(0))
+        return coefficients
+
+    def __solve_problem(self, c0=None):
         if self.__problem==None:
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
         validate = getattr(self.__problem, "validate_collocation_compatibility", None)
         if validate is not None:
             validate()
-        if self.__use_mpmath:
-            print("Warning! Using mpmath with", self.__mp_ref.mp.dps, "significant digits and backend", self.__mp_ref.libmp.BACKEND ,". Solution will be slow!" )
-
         converged = False
-        c_ref = self.__base_solution_expand()
+        with self.__progress.phase("initial_expansion", level=1):
+            c_ref = self.__base_solution_expand()
         if c0 is not None:
             self.__base_solution = c0   
-        if self.__base_solution is None:
-            c0 = self.__base_solution_expand()
-        else:
-            c0 = self.function_expand(
-                lambda x: self.solution_in_domain(self.__base_solution, x),
-                interior_only=isinstance(self.__problem, CollocationProblemAdapter),
-            )
+        with self.__progress.phase("initial_guess", level=1):
+            if self.__base_solution is None:
+                c0 = self.__base_solution_expand()
+            else:
+                c0 = self.function_expand(
+                    lambda x: self.solution_in_domain(self.__base_solution, x),
+                    interior_only=isinstance(self.__problem, CollocationProblemAdapter),
+                )
         c = c0;
         self.__globalization = 0
 
@@ -1059,6 +1097,7 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__initialization_result = initialize_fsolve(
                 initial_system, c.copy(), tolerance=self.__initializer_tolerance,
                 max_evaluations=self.__initializer_max_evaluations,
+                progress=self.__progress,
             )
             c = self.__initialization_result.state.copy()
 
@@ -1067,18 +1106,59 @@ class solve_nonlinear_problem(collocation_discretization):
             if self.__use_mpmath:
                 raise ValueError("only 'newton' can be used to solve with mpmath library")
             target = np.float64(self.__tolerance)*self.__sqrt(self._M)
-            options = {} if self.__use_method == "root_no_jac" else {
-                "jac": self.__linearization_operator,
-            }
-            res = optimize.root(self.__residual_operator, c, method="hybr",
-                                tol=target, **options)
-            self.__scipy_result = verify_scipy_result(
-                res, residual=lambda coefficients: self.__residual_operator(coefficients, q=0),
-                target_norm=target, method=self.__use_method,
-            )
+            evaluations = [0, 0]
+            best_norm = np.float64("inf")
+
+            def scipy_residual(coefficients):
+                nonlocal best_norm
+                values = self.__residual_operator(coefficients)
+                evaluations[0] += 1
+                if self.__progress.wants("scipy_evaluation", level=2, throttle=True):
+                    if not np.all(np.isfinite(values)):
+                        norm = np.float64("inf")
+                    else:
+                        maximum = np.max(np.abs(values))
+                        with np.errstate(under="ignore"):
+                            norm = (np.float64(0) if maximum == 0 else
+                                    maximum*np.sqrt(np.mean((values/maximum)**2)))
+                    best_norm = min(best_norm, norm)
+                    self.__progress.emit(
+                        "scipy_evaluation", level=2, throttle=True,
+                        function_evaluations=evaluations[0],
+                        jacobian_evaluations=evaluations[1], residual_norm=norm,
+                        best_reported_residual_norm=best_norm, target_norm=target,
+                        homotopy=np.float64(0))
+                return values
+
+            def scipy_jacobian(coefficients):
+                with self.__progress.phase("scipy_jacobian", level=3,
+                                           jacobian_evaluations=evaluations[1]+1):
+                    matrix = self.__linearization_operator(coefficients)
+                evaluations[1] += 1
+                return matrix
+
+            options = {} if self.__use_method == "root_no_jac" else {"jac": scipy_jacobian}
+            with self.__progress.phase("scipy_solve", level=1, homotopy=np.float64(0),
+                                       target_norm=target):
+                res = optimize.root(scipy_residual, c, method="hybr", tol=target, **options)
+            self.__progress.emit(
+                "scipy_stop", scipy_success=bool(getattr(res, "success", False)),
+                status=getattr(res, "status", None), message=str(getattr(res, "message", "")),
+                nfev=getattr(res, "nfev", None), njev=getattr(res, "njev", None))
+            with self.__progress.phase("scipy_verification", level=1,
+                                       homotopy=np.float64(0)):
+                self.__scipy_result = verify_scipy_result(
+                    res, residual=lambda coefficients: self.__residual_operator(coefficients, q=0),
+                    target_norm=target, method=self.__use_method,
+                )
             c = res.x
             converged = self.__scipy_result.converged
-            print("scipy:", self.__scipy_result)
+            self.__progress.emit(
+                "scipy_verification", converged=self.__scipy_result.converged,
+                reason=self.__scipy_result.reason,
+                residual_norm=self.__scipy_result.residual_norm,
+                residual_max=self.__scipy_result.residual_max, target_norm=target,
+                homotopy=self.__scipy_result.homotopy)
         elif self.__use_method == "newton":
             scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
 
@@ -1089,10 +1169,6 @@ class solve_nonlinear_problem(collocation_discretization):
                     raise LinearSolveError(str(error)) from error
 
             def iteration_callback(coefficients, iteration):
-                print(iteration.kind + ": iteration", iteration.iteration,
-                      ", residual norm", self.__format_scalar(iteration.residual_norm),
-                      ", weight =", self.__format_scalar(iteration.step),
-                      ", homotopy =", self.__format_scalar(iteration.homotopy))
                 if self.__visualize:
                     t = np.arange(0, np.pi, 0.01)
                     u = self.obtain_solution_in_basis(coefficients, t)
@@ -1148,7 +1224,6 @@ class solve_nonlinear_problem(collocation_discretization):
             )
             # Preserve the historical RMS stopping threshold exposed by tolerance.
             target = scalar(self.__tolerance)*self.__sqrt(self._M)
-            print("newton: target residual norm =", self.__format_scalar(target))
             self.__newton_result = solve_newton(
                 system,
                 atol=target,
@@ -1159,6 +1234,7 @@ class solve_nonlinear_problem(collocation_discretization):
                 newton_fallback=self.__newton_fallback,
                 adjoint_max_steps=self.__adjoint_max_steps,
                 callback=iteration_callback,
+                progress=self.__progress,
             )
             c = self.__newton_result.state
             converged = self.__newton_result.converged
@@ -1185,10 +1261,7 @@ class solve_nonlinear_problem(collocation_discretization):
                 if self.__newton_result is None:
                     raise
                 final_norm = self.__mp_ref.inf
-        if converged:
-            print("converged with norm =", self.__format_scalar(final_norm))
-        else:
-            print("failed to converge with norm =", self.__format_scalar(final_norm))
+        self.__final_residual_norm = final_norm
             
         self.__current_solution = c
         self.__converged = converged
@@ -1208,11 +1281,6 @@ class solve_nonlinear_problem(collocation_discretization):
     def get_scipy_result(self):
         """Return SciPy termination and independent residual diagnostics."""
         return self.__scipy_result
-
-    def __format_scalar(self, value):
-        if self.__use_mpmath:
-            return self.__mp_ref.nstr(value, 8)
-        return "{:.6e}".format(value)
 
     def obtain_solution_in_domain(self, c, x):
         return self.solution_in_domain(c, x)

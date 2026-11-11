@@ -55,7 +55,7 @@ non-unit epsilon requires the Galerkin solver and its supported boundary data.
 
 ## Solve, inspect, and save
 
-The common solver keeps its established keyword interface:
+Use the common solver's keyword interface:
 
 ```python
 solution = solve(
@@ -69,6 +69,53 @@ context with the requested decimal `precision`. Python versus gmpy mpmath is a
 process-level choice made before import. The NumPy collocation methods remain
 `newton`, `root`, `root_no_jac`, and `nonlin_solve`; mpmath and Galerkin use
 Newton. No automatic method or solver selection depends on epsilon.
+
+Use `verbosity` for live diagnostics from either discretization and arithmetic:
+
+```python
+solution = solve(problem, 8, solver="collocation", verbosity=2)
+```
+
+| Level | Solver text |
+| --- | --- |
+| `0` | Quiet; the library default |
+| `1` | Solve information, major phases and stages, refinement decisions, final outcome |
+| `2` | Level 1 plus accepted Newton/adjoint steps and periodic SciPy evaluations |
+| `3` | Level 2 plus rejected trials, backtracking, recovery reasons, Jacobian and linear-solve phases |
+
+`verbosity` must be an integer from 0 through 3; booleans are rejected. The old
+`verbose` keyword has been removed: replace `verbose=True` with `verbosity=2`
+and `verbose=False` with `verbosity=0`. There is no compatibility alias.
+Notebook helpers and example command lines use level 2 by default. Example
+`run()` functions retain the quiet library default. Scripts accept
+`--verbosity 0` through `--verbosity 3`; their final scientific result reports
+remain available even when solver progress is quiet.
+
+An optional observer receives immutable `ProgressEvent` objects independently
+of console verbosity:
+
+```python
+events = []
+solution = solve(problem, 8, verbosity=0, progress_callback=events.append)
+for event in events:
+    print(event.kind, event.solver, event.method, event.elapsed, event.data)
+```
+
+`event.data` is a read-only mapping of native numerical scalars and immutable
+metadata, with no coefficient arrays or live arithmetic contexts. No event
+history is retained unless the observer collects it. `progress_interval=1.0`
+sets the minimum time between frequent evaluation/trial text messages; zero
+disables throttling. Phase transitions and final outcomes are always printed
+at their selected level, and observer delivery is not throttled. Observer
+errors propagate as `ProgressCallbackError`, retaining the original exception
+as their cause; they are not treated as recoverable numerical failures.
+
+Residual messages identify their norm and target: collocation uses RMS and
+Galerkin uses the Euclidean norm. SciPy HYBR and `fsolve` report actual
+function/Jacobian evaluations rather than accepted Newton iterations. Their
+stop statuses remain distinct from independently verified convergence.
+See the [numerical guide](numerical_methods.md#live-progress-reporting) for
+phase timing, precision, and the reporting contract.
 
 Initialization, Newton recovery, and homotopy have separate controls:
 
@@ -119,6 +166,7 @@ The package root exports these supported groups:
 | Data and explicit conversion | `save_solution`, `load_solution`, `load_legacy_collocation`, `project_collocation` |
 | Physical diagnostics | `physical_l2_norm`, `physical_h1_norm`, `physical_l2_error`, `physical_h1_error` |
 | Rendering | `plot_fields`, `plot_coefficients` |
+| Live progress | `ProgressEvent` |
 
 Importing the package is lazy. Low-level numerical components remain available
 through canonical submodules for assembly work and explicit legacy experiments.

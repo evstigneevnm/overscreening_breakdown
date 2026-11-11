@@ -13,12 +13,15 @@ def make_case():
     return rational_case(nonlinear=True, beta="0.1", initial="exp")
 
 
-def run(*, use_mpmath=False, precision=50, method="newton", problem=None):
+def run(*, use_mpmath=False, precision=50, method="newton", problem=None,
+        verbosity=0, progress_callback=None, progress_interval=1.0):
     """Return an evaluable solution; the physical definition is reused unchanged."""
     case = make_case()
     solution = solve(case.make_problem() if problem is None else problem, 8,
                      solver="collocation", use_mpmath=use_mpmath, precision=precision,
-                     method=method, tolerance=tolerance(use_mpmath, precision))
+                     method=method, tolerance=tolerance(use_mpmath, precision),
+                     verbosity=verbosity, progress_callback=progress_callback,
+                     progress_interval=progress_interval)
     if not solution.converged:
         raise RuntimeError("The collocation example did not converge")
     return solution
@@ -29,7 +32,8 @@ def main(argv=None):
     case = make_case()
     problem = case.make_problem()
     for use_mpmath in backend_choices(options.backend):
-        solution = run(problem=problem, use_mpmath=use_mpmath, precision=options.precision)
+        solution = run(problem=problem, use_mpmath=use_mpmath, precision=options.precision,
+                       verbosity=options.verbosity)
         report(solution, sampled_error(solution, case))
         if options.output_dir is not None:
             write_outputs(solution, options.output_dir,

@@ -100,6 +100,33 @@ class UserExampleTests(unittest.TestCase):
                         self.assertEqual(completed.returncode, 0, completed.stdout+completed.stderr)
                         self.assertIn("--output-dir", completed.stdout)
                         self.assertIn("--backend", completed.stdout)
+                        self.assertIn("--verbosity", completed.stdout)
+
+    def test_example_functions_forward_quiet_progress_observers(self):
+        for module in (collocation, galerkin, variable_epsilon, bsk):
+            with self.subTest(example=module.__name__):
+                events = []
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    solution = module.run(verbosity=0, progress_callback=events.append)
+                self.assertTrue(solution.converged)
+                self.assertEqual(output.getvalue(), "")
+                self.assertTrue(events)
+                self.assertEqual(events[0].kind, "solve_start")
+                self.assertEqual(events[-1].kind, "solve_end")
+                self.assertTrue(all(event.solver == solution.solver_type for event in events))
+
+    def test_example_cli_verbosity_controls_solver_text_and_retains_final_data(self):
+        for module in (collocation, galerkin):
+            for verbosity in (0, 2):
+                with self.subTest(example=module.__name__, verbosity=verbosity):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        module.main(["--backend", "numpy", "--verbosity", str(verbosity)])
+                    text = output.getvalue()
+                    self.assertIn("nonlinear_converged=True", text)
+                    self.assertEqual("solve_start" in text, verbosity == 2)
+                    self.assertEqual("solve_end" in text, verbosity == 2)
 
     def test_off_repository_cli_writes_typed_snapshot_and_actual_figures(self):
         environment = os.environ.copy()
@@ -153,6 +180,10 @@ class UserExampleTests(unittest.TestCase):
                         self.assertNotIn(internal_name, source)
                     self.assertIn("initializer=initializer", source)
                     self.assertIn("newton_fallback=newton_fallback", source)
+                    self.assertIn("verbosity=verbosity", source)
+                    self.assertIn("progress_callback=progress_callback", source)
+                    self.assertIn("progress_interval=progress_interval", source)
+                    self.assertNotIn("verbose=", source)
         legacy_path = ROOT/"experiments"/"notebooks"/"legacy_boundary_experiments.ipynb"
         legacy = json.loads(legacy_path.read_text())
         legacy_source = []
@@ -198,8 +229,21 @@ class UserExampleTests(unittest.TestCase):
             self.assertEqual(finite.boundary_conditions[0][0], 100)
             self.assertEqual(finite.boundary_conditions[1][:2], (0, 0))
             problem = collocation.make_case().make_problem()
-            source = namespace["run_collocation"](problem, 8, L=1, tolerance="1e-35",
-                                                   use_mpmath=True, precision=50)
+            self.assertEqual(namespace["run_collocation"].__kwdefaults__["verbosity"], 2)
+            live_output = io.StringIO()
+            with redirect_stdout(live_output):
+                source = namespace["run_collocation"](problem, 8, L=1, tolerance="1e-35",
+                                                       use_mpmath=True, precision=50)
+            self.assertIn("solve_start", live_output.getvalue())
+            self.assertIn("solve_end", live_output.getvalue())
+            quiet_output = io.StringIO()
+            events = []
+            with redirect_stdout(quiet_output):
+                quiet = namespace["run_collocation"](
+                    problem, 8, L=1, verbosity=0, progress_callback=events.append)
+            self.assertTrue(quiet.converged)
+            self.assertEqual(quiet_output.getvalue(), "")
+            self.assertEqual((events[0].kind, events[-1].kind), ("solve_start", "solve_end"))
             initialized = namespace["run_collocation"](
                 problem, 8, L=1, tolerance="1e-10", initializer="fsolve")
             self.assertTrue(initialized.converged)
