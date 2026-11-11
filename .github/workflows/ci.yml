@@ -121,7 +121,7 @@ jobs:
           set -o pipefail
           coverage_args=()
           if [[ "$EXPECTED_MPMATH_BACKEND" == gmpy ]] && python -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 13))'; then
-            coverage_args=(--cov=overscreening_breakdown --cov-report=term --cov-report="xml:$CI_ARTIFACT_DIR/coverage.xml")
+            coverage_args=(--cov=overscreening_breakdown --cov-branch --cov-config="$PWD/pyproject.toml" --cov-report=term --cov-report="xml:$CI_ARTIFACT_DIR/coverage.xml")
           fi
           python -B -m pytest -v "${coverage_args[@]}" \
             --junitxml="$CI_ARTIFACT_DIR/junit.xml" \

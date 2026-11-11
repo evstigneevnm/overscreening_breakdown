@@ -40,6 +40,7 @@ class BenchmarkRunnerTests(unittest.TestCase):
         for row in report["records"]:
             self.assertTrue(row["nonlinear_converged"])
             self.assertTrue(row["quadrature_converged"])
+            self.assertIsNone(row["scipy"])
             self.assertLess(float(row["errors"]["u_l2"]), 1e-10)
             self.assertEqual(row["diagnostic_domain"], ["0", "inf"])
 
@@ -56,6 +57,17 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertLess(mp.mpf(fine["errors"]["u_l2"]), mp.mpf("1e-45"))
         self.assertLess(mp.mpf(fine["errors"]["u_l2"]), mp.mpf(coarse["errors"]["u_l2"])/mp.mpf("1e10"))
         self.assertGreater(len(fine["coefficients"][0]), 40)
+        for row in (coarse, fine):
+            # Each refined-plan record now includes its complete Newton state.
+            # Serialize that native mpmath column with the same decimal
+            # precision as the independently retained final coefficients.
+            final = row["quadrature_history"][-1]["newton_result"]
+            self.assertEqual(final["state"], row["coefficients"])
+            self.assertEqual(len(final["state"]), row["unknown_count"])
+            self.assertTrue(all(isinstance(value, str) for value in final["state"]))
+            self.assertEqual(final["adjoint_steps"], row["newton"]["adjoint_steps"])
+            self.assertEqual(final["adjoint_evaluations"], row["newton"]["adjoint_evaluations"])
+            self.assertEqual(final["iterations"], row["newton"]["iterations"])
 
     def test_legacy_only_operator_remains_an_explicit_bounded_study(self):
         status, report = self.run_study([
@@ -67,6 +79,46 @@ class BenchmarkRunnerTests(unittest.TestCase):
         self.assertIn("u_l2_finite_interval", row["errors"])
         self.assertNotIn("u_l2", row["errors"])
         self.assertEqual(row["diagnostic_domain"], ["0", "8"])
+        self.assertIsNone(row["scipy"])
+
+    def test_numpy_scipy_studies_export_stop_status_and_verified_residuals(self):
+        for method in ("root", "root_no_jac", "nonlin_solve"):
+            with self.subTest(method=method):
+                status, report = self.run_study([
+                    "--case", "rational-nonlinear:constant", "--solver", "collocation",
+                    "--N", "6", "--method", method, "--no-globalization"])
+                self.assertEqual(status, 0)
+                row = report["records"][0]
+                diagnostics = row["scipy"]
+                self.assertTrue(row["converged"] and row["nonlinear_converged"])
+                self.assertIsNone(row["newton"])
+                self.assertEqual(diagnostics["method"], method)
+                self.assertTrue(diagnostics["converged"])
+                self.assertEqual(diagnostics["reason"], "converged")
+                self.assertIsInstance(diagnostics["scipy_success"], bool)
+                self.assertIsInstance(diagnostics["status"], int)
+                self.assertIsInstance(diagnostics["message"], str)
+                self.assertGreater(diagnostics["nfev"], 0)
+                self.assertEqual(float(diagnostics["homotopy"]), 0)
+                self.assertLessEqual(float(diagnostics["residual_norm"]),
+                                     float(diagnostics["target_norm"]))
+                self.assertLessEqual(float(diagnostics["residual_norm"]),
+                                     float(diagnostics["residual_max"]))
+                self.assertLess(float(row["errors"]["u_l2_finite_interval"]), 1e-8)
+
+    def test_legacy_scipy_study_records_verified_nonlinear_convergence(self):
+        status, report = self.run_study([
+            "--case", "nonlinear:1", "--solver", "legacy_collocation", "--N", "8",
+            "--method", "root_no_jac", "--no-globalization"])
+        self.assertEqual(status, 0)
+        row = report["records"][0]
+        self.assertTrue(row["nonlinear_converged"])
+        self.assertIsNone(row["newton"])
+        self.assertEqual(row["scipy"]["method"], "root_no_jac")
+        self.assertTrue(row["scipy"]["converged"])
+        self.assertLessEqual(float(row["scipy"]["residual_norm"]),
+                             float(row["scipy"]["target_norm"]))
+        self.assertGreater(row["scipy"]["nfev"], 0)
 
     def test_nonconvergence_is_recorded_and_returns_failure(self):
         status, report = self.run_study([

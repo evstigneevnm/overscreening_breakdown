@@ -70,12 +70,44 @@ process-level choice made before import. The NumPy collocation methods remain
 `newton`, `root`, `root_no_jac`, and `nonlin_solve`; mpmath and Galerkin use
 Newton. No automatic method or solver selection depends on epsilon.
 
+Initialization, Newton recovery, and homotopy have separate controls:
+
+| Control | Values and scope |
+| --- | --- |
+| `initializer` | `None` (default) or `"fsolve"`; NumPy collocation only |
+| `initializer_tolerance` | Positive fsolve step tolerance, default `"0.1"` |
+| `initializer_max_evaluations` | Hard initializer residual/Jacobian evaluation budget, default `200` |
+| `newton_fallback` | `None` (default) or `"adjoint"`; Newton with either solver and arithmetic |
+| `adjoint_max_steps` | Maximum accepted recovery steps per fixed homotopy stage, default `20` |
+| `use_globalization` | Existing homotopy control; independent of initializer and fallback |
+
+For example, `solve(problem, 8, initializer="fsolve")` requests a bounded SciPy
+initialization before the selected NumPy collocation solve. It does not certify
+final convergence. A native mpmath or mixed solve can instead enable
+`newton_fallback="adjoint"` while retaining its arithmetic. Requesting fsolve
+with mpmath or Galerkin raises an error. Adjoint recovery requires
+`method="newton"` and is attempted only when an ordinary Newton step cannot be
+accepted. See the [merit and constraints](numerical_methods.md#newton-recovery-and-initialization).
+
 Results are `CollocationSolution` or `GalerkinSolution`, exposing `u`, `w`,
 `u_dx`, `w_dx`, `flux`, coefficients, actual unknown count, and convergence
 metadata. Galerkin requires both `nonlinear_converged` and
 `quadrature_converged`; these are distinct from physical approximation error.
 See the [numerical guide](numerical_methods.md) for all solver and quadrature
 controls, low-level assembly, reference fields, and physical norms.
+`initialization_result` records an explicitly requested initializer;
+`newton_result` records actual adjoint steps separately from Newton attempts.
+For SciPy collocation methods, `scipy_result` retains SciPy's success flag,
+status, message and evaluation counts alongside the verified final residual
+and its acceptance target. The solver recomputes the complete residual at
+`q=0`, including boundary equations; convergence requires finite coefficients
+and a finite residual RMS no larger than `tolerance*sqrt(unknown_count)`.
+This is the historical collocation Newton residual target. SciPy's step-based
+termination flag alone does not determine convergence. `scipy_result` is
+`None` for Newton and Galerkin solves. This algebraic check does not establish
+spatial accuracy; manufactured field and boundary checks remain separate.
+These diagnostics are available during the process and are not serialized in
+the saved-solution format.
 
 The package root exports these supported groups:
 

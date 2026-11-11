@@ -148,6 +148,25 @@ class UserExampleTests(unittest.TestCase):
                 self.assertIn("overscreening_breakdown", source)
                 if path.name != "examples_problems_updated_testing.ipynb":
                     self.assertIn("BSKProblem", source)
+                    for internal_name in ("solve_nonlinear_problem", "CollocationProblemAdapter",
+                                          "CollocationSolution", "LegacyBSK", "use_adjoint_opimization"):
+                        self.assertNotIn(internal_name, source)
+                    self.assertIn("initializer=initializer", source)
+                    self.assertIn("newton_fallback=newton_fallback", source)
+        legacy_path = ROOT/"experiments"/"notebooks"/"legacy_boundary_experiments.ipynb"
+        legacy = json.loads(legacy_path.read_text())
+        legacy_source = []
+        for cell in legacy["cells"]:
+            if cell["cell_type"] == "code":
+                self.assertEqual(cell.get("outputs"), [])
+                self.assertIsNone(cell.get("execution_count"))
+                code = "".join(cell["source"])
+                ast.parse("\n".join(line for line in code.splitlines()
+                                    if not line.lstrip().startswith("%")))
+                legacy_source.append(code)
+        self.assertIn("from overscreening_breakdown.collocation.spectral1d import", "\n".join(legacy_source))
+        self.assertIn("from overscreening_breakdown.problems.bsk import", "\n".join(legacy_source))
+        self.assertNotIn("use_adjoint_opimization", "\n".join(legacy_source))
         execution = json.loads((ROOT/"examples"/"notebooks"/"execution_example.ipynb").read_text())
         setup = next("".join(cell["source"]) for cell in execution["cells"]
                      if cell["cell_type"] == "code" and "def run_collocation(" in "".join(cell["source"]))
@@ -181,6 +200,13 @@ class UserExampleTests(unittest.TestCase):
             problem = collocation.make_case().make_problem()
             source = namespace["run_collocation"](problem, 8, L=1, tolerance="1e-35",
                                                    use_mpmath=True, precision=50)
+            initialized = namespace["run_collocation"](
+                problem, 8, L=1, tolerance="1e-10", initializer="fsolve")
+            self.assertTrue(initialized.converged)
+            self.assertIsNotNone(initialized.initialization_result)
+            self.assertEqual(initialized.initialization_result.method, "fsolve")
+            self.assertLessEqual(initialized.initialization_result.evaluations, 200)
+            self.assertIsNone(source.initialization_result)
             mixed = namespace["solve"](problem, 4, solver="galerkin", use_mpmath=True,
                                          precision=50, tolerance="1e-35")
             self.assertTrue(source.converged)
@@ -190,6 +216,20 @@ class UserExampleTests(unittest.TestCase):
             mixed.save(path)
             restored = namespace["load_solution"](path, problem=problem, solver="galerkin")
             self.assertEqual(tuple(restored.coefficients), tuple(mixed.coefficients))
+            comparison = next("".join(cell["source"]) for cell in execution["cells"]
+                              if cell["cell_type"] == "code"
+                              and "def compare_globalization_strategies(" in "".join(cell["source"]))
+            with redirect_stdout(io.StringIO()):
+                exec(compile(comparison, "execution_example.ipynb bounded comparison", "exec"), namespace)
+            outcomes = namespace["bounded_comparisons"]
+            self.assertEqual(len(outcomes), 12)
+            for key, current in outcomes.items():
+                with self.subTest(strategy=key):
+                    self.assertTrue(current.converged)
+                    self.assertEqual(current.newton_result.homotopy, 0)
+                    self.assertIsNone(current.initialization_result)
+                    if key[2] != "adjoint fallback enabled":
+                        self.assertEqual(current.newton_result.adjoint_steps, 0)
 
 
 if __name__ == "__main__":

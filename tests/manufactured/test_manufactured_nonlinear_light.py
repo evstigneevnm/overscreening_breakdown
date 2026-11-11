@@ -31,8 +31,9 @@ class NonlinearManufacturedLightTests(unittest.TestCase):
             method=method, use_mpmath=use_mpmath, precision=precision,
             tolerance=tolerance, use_globalization=False,
         )
-        self.assertTrue(result.converged, None if result.newton_result is None
-                        else result.newton_result.reason)
+        diagnostic = (result.scipy_result if result.newton_result is None
+                      else result.newton_result.reason)
+        self.assertTrue(result.converged, diagnostic)
         self.assertEqual(result.unknown_count, size+sum(
             value is not None for row in result.physical.boundary_conditions for value in row))
         arithmetic = result.arithmetic
@@ -46,6 +47,11 @@ class NonlinearManufacturedLightTests(unittest.TestCase):
         if result.newton_result is not None:
             self.assertLess(result.newton_result.residual_norm, bound)
             self.assertEqual(result.newton_result.homotopy, 0)
+        else:
+            self.assertIsNotNone(result.scipy_result)
+            self.assertLessEqual(result.scipy_result.residual_norm,
+                                 result.scipy_result.target_norm)
+            self.assertEqual(result.scipy_result.homotopy, 0)
         _, normalized_defect, error = collocation_diagnostics(result, case)
         self.assertLess(normalized_defect, bound)
         self.assertLess(max(boundary_errors(result)), bound)

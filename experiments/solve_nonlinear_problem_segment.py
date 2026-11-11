@@ -13,7 +13,7 @@ def main():
     problem = nonlinear_problem_on_segment()
     MM = [10]
     use_mpmath = False
-    use_adjoint_opimization = True
+    initializer = None if use_mpmath else "fsolve"
     fp_prec = 100
     if use_mpmath:
         tolerance = 1.0e-30
@@ -25,7 +25,7 @@ def main():
     for j in MM:
         N = j
         print("domain = ", N)
-        solver = solve_nonlinear_problem(N, problem.get_domain(), tolerance = tolerance, use_method = "newton", visualize = False, use_mpmath = use_mpmath, prec = fp_prec, use_adjoint_opimization = use_adjoint_opimization)
+        solver = solve_nonlinear_problem(N, problem.get_domain(), tolerance = tolerance, use_method = "newton", visualize = False, use_mpmath = use_mpmath, prec = fp_prec, initializer = initializer)
         solver.set_problem(problem)
         c = solver.solve_problem(c0 = c)
         c_dict[j] = c

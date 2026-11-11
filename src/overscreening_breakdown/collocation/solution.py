@@ -29,6 +29,8 @@ class CollocationSolution:
     converged: bool
     nonlinear_converged: bool
     newton_result: Any = field(repr=False)
+    initialization_result: Any = field(repr=False)
+    scipy_result: Any = field(repr=False)
     _entries: tuple = field(repr=False)
     solver_type = "collocation"
     plan = None
@@ -37,7 +39,8 @@ class CollocationSolution:
     projection_info = ()
 
     def __init__(self, *, physical, coefficients, N, L=1, method="newton",
-                 converged=False, nonlinear_converged=None, newton_result=None):
+                 converged=False, nonlinear_converged=None, newton_result=None,
+                 initialization_result=None, scipy_result=None):
         if not isinstance(physical, BoundFluxProblem):
             raise TypeError("physical must be a BoundFluxProblem")
         physical.check_precision()
@@ -55,6 +58,8 @@ class CollocationSolution:
             ("mapping", mapping), ("method", method), ("converged", bool(converged)),
             ("nonlinear_converged", bool(converged) if nonlinear_converged is None
              else bool(nonlinear_converged)), ("newton_result", newton_result),
+            ("initialization_result", initialization_result),
+            ("scipy_result", scipy_result),
             ("_entries", entries), ("_signature", arithmetic_signature(arithmetic)),
             ("_tail", _distance_polynomial(arithmetic, entries)),
         ):

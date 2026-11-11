@@ -7,7 +7,7 @@ The default is one small case, not the historical Cartesian parameter sweep.
 import argparse
 from contextlib import nullcontext, redirect_stdout
 import csv
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 import io
@@ -111,13 +111,21 @@ def _portable(value, arithmetic):
     if value is None or isinstance(value, (bool, str, int)):
         return value
     if is_dataclass(value):
-        return _portable(asdict(value), arithmetic)
+        # Traverse native diagnostic objects without deepcopying their
+        # context-bound mpmath matrices into a foreign arithmetic context.
+        return {item.name: _portable(getattr(value, item.name), arithmetic)
+                for item in fields(value)}
     if isinstance(value, dict):
         return {str(k): _portable(v, arithmetic) for k, v in value.items()}
     if isinstance(value, (tuple, list)):
         return [_portable(v, arithmetic) for v in value]
     if isinstance(value, np.ndarray):
         return _portable(value.tolist(), arithmetic)
+    if hasattr(value, "rows") and hasattr(value, "cols"):
+        if value.cols == 1:
+            return [_portable(value[row, 0], arithmetic) for row in range(value.rows)]
+        return [[_portable(value[row, column], arithmetic) for column in range(value.cols)]
+                for row in range(value.rows)]
     return _decimal(value, arithmetic)
 
 
@@ -179,7 +187,10 @@ def _newton_metadata(result):
     if result is None:
         return None
     return {"reason": result.reason, "residual_norm": result.residual_norm,
-            "homotopy": result.homotopy, "history": result.history, "stages": result.stages}
+            "homotopy": result.homotopy, "history": result.history, "stages": result.stages,
+            "iterations": result.iterations, "adjoint_steps": result.adjoint_steps,
+            "adjoint_evaluations": result.adjoint_evaluations,
+            "recovery_reasons": result.recovery_reasons}
 
 
 def _diagnostics(*args, **kwargs):
@@ -220,6 +231,7 @@ def _common(case, options, N, precision, quadrature_order):
             "final_quadrature_order": plan.order if plan is not None else None,
             "final_subdivisions": plan.subdivisions if plan is not None else None,
             "newton": _newton_metadata(solution.newton_result),
+            "scipy": getattr(solution, "scipy_result", None),
             "wall_u_defect": solution.u(0)-solution.physical.boundary_conditions[0][0],
             "far_u_trace": solution.u(arithmetic.inf),
             "diagnostic_domain": ["0", options.diagnostic_endpoint if options.solver == "collocation" else "inf"],
@@ -254,6 +266,7 @@ def _legacy(case, options, N, precision):
         coefficients = discretization.solve_problem()
         converged = discretization.is_converged()
         result = discretization.get_newton_result()
+        scipy_result = discretization.get_scipy_result()
         method = options.method
     else:
         discretization = collocation_discretization(
@@ -273,7 +286,7 @@ def _legacy(case, options, N, precision):
         coefficients = discretization.solve(matrix, rhs)
         residual = matrix*coefficients-rhs if use_mp else matrix@coefficients-rhs
         converged = arithmetic.norm(residual) <= arithmetic.scalar(options.tolerance)*(1+arithmetic.norm(rhs))
-        result, method = None, "direct"
+        result, scipy_result, method = None, None, "direct"
     solve_seconds = perf_counter()-started
 
     def evaluate(field, x):
@@ -293,8 +306,9 @@ def _legacy(case, options, N, precision):
                                endpoint=options.diagnostic_endpoint)
     return {"method": method, "unknown_count": len(coefficients),
             "converged": bool(converged),
-            "nonlinear_converged": bool(converged) if result is not None else None,
+            "nonlinear_converged": bool(converged) if result is not None or scipy_result is not None else None,
             "quadrature_converged": None, "newton": _newton_metadata(result),
+            "scipy": scipy_result,
             "operator": tuple(problem.operator()),
             "boundary_conditions": problem.get_boundary_conditions(),
             "wall_u_defect": evaluate("u", arithmetic.scalar(0))-arithmetic.scalar(problem.get_boundary_conditions()[0][0]),

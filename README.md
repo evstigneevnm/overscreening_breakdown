@@ -51,6 +51,11 @@ Galerkin returns independent fields `u` and `w`; collocation derives `w=-u''`.
 counts and attained accuracy. Galerkin's overall convergence requires both
 Newton and quadrature checks.
 
+NumPy collocation can refine its starting guess with `initializer="fsolve"`.
+Both solvers can enable native adjoint recovery with `newton_fallback="adjoint"`,
+including mpmath runs. Initialization, adjoint steps, and homotopy have separate
+controls and diagnostics; see the [public API guide](docs/public_api.md).
+
 - [Numerical methods, problem definitions, and manufactured catalog](docs/numerical_methods.md)
 - [Saved solutions, explicit projection, and restart compatibility](docs/saved_solutions.md)
 - [Installation, development, testing, and distribution builds](docs/installation.md)

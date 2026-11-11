@@ -176,21 +176,69 @@ class ScipySolverTests(unittest.TestCase):
     def test_success_returns_scipy_solution_and_sets_convergence(self):
         for method in ("root", "root_no_jac", "nonlin_solve"):
             with self.subTest(method=method):
-                solver = self.solver(method)
-                expected = np.linspace(0, 0.5, 10)
-                result = OptimizeResult(x=expected, success=True)
+                solver = self.solver("newton")
+                expected = solver.solve_problem().copy()
+                solver.set_method(method)
+                result = OptimizeResult(x=expected, success=True, status=1,
+                                        message="reported convergence", nfev=7, njev=2)
                 with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", return_value=result):
                     actual = solver.solve_problem()
                 np.testing.assert_array_equal(actual, expected)
                 self.assertTrue(solver.is_converged())
+                diagnostics = solver.get_scipy_result()
+                self.assertTrue(diagnostics.converged and diagnostics.scipy_success)
+                self.assertEqual(diagnostics.status, 1)
+                self.assertEqual((diagnostics.nfev, diagnostics.njev), (7, 2))
+                self.assertLessEqual(diagnostics.residual_norm, diagnostics.target_norm)
+
+    def test_scipy_stagnation_can_still_return_a_verified_root(self):
+        for method in ("root", "root_no_jac", "nonlin_solve"):
+            with self.subTest(method=method):
+                solver = self.solver("newton")
+                expected = solver.solve_problem().copy()
+                solver.set_method(method)
+                result = OptimizeResult(x=expected, success=False, status=5,
+                                        message="iteration is not making good progress",
+                                        fun=np.full(expected.shape, np.nan), nfev=23)
+                with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", return_value=result):
+                    actual = solver.solve_problem()
+                np.testing.assert_array_equal(actual, expected)
+                self.assertTrue(solver.is_converged())
+                diagnostics = solver.get_scipy_result()
+                self.assertFalse(diagnostics.scipy_success)
+                self.assertEqual(diagnostics.status, 5)
+                self.assertEqual(diagnostics.reason, "converged")
+                self.assertLessEqual(diagnostics.residual_norm, diagnostics.target_norm)
+
+    def test_scipy_success_and_cached_zero_residual_do_not_certify_boundary_data(self):
+        for method in ("root", "root_no_jac", "nonlin_solve"):
+            with self.subTest(method=method):
+                solver = self.solver(method)
+                # With mu=0, u=0 satisfies the differential equation, but not
+                # the prescribed wall value u(0)=1. The boundary rows must be
+                # included in the freshly assembled acceptance residual.
+                coefficients = np.zeros(10)
+                result = OptimizeResult(x=coefficients, success=True, status=1,
+                                        fun=np.zeros(10), message="reported success")
+                with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", return_value=result):
+                    actual = solver.solve_problem()
+                np.testing.assert_array_equal(actual, coefficients)
+                self.assertFalse(solver.is_converged())
+                diagnostics = solver.get_scipy_result()
+                self.assertTrue(diagnostics.scipy_success)
+                self.assertEqual(diagnostics.reason, "residual_too_large")
+                self.assertGreater(diagnostics.residual_norm, diagnostics.target_norm)
+                self.assertGreaterEqual(diagnostics.residual_max, 1)
 
     def test_failure_returns_last_iterate_and_clears_previous_success(self):
         for method in ("root", "root_no_jac", "nonlin_solve"):
             with self.subTest(method=method):
-                solver = self.solver(method)
+                solver = self.solver("newton")
+                verified = solver.solve_problem().copy()
+                solver.set_method(method)
                 last_iterate = np.linspace(0, 0.5, 10)
                 results = [
-                    OptimizeResult(x=np.zeros(10), success=True),
+                    OptimizeResult(x=verified, success=True),
                     OptimizeResult(x=last_iterate, success=False),
                 ]
                 with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", side_effect=results):
@@ -199,13 +247,16 @@ class ScipySolverTests(unittest.TestCase):
                     actual = solver.solve_problem()
                 np.testing.assert_array_equal(actual, last_iterate)
                 self.assertFalse(solver.is_converged())
+                self.assertFalse(solver.get_scipy_result().converged)
 
     def test_unexpected_exception_propagates_and_clears_previous_success(self):
         for method in ("root", "root_no_jac", "nonlin_solve"):
             with self.subTest(method=method):
-                solver = self.solver(method)
+                solver = self.solver("newton")
+                verified = solver.solve_problem().copy()
+                solver.set_method(method)
                 results = [
-                    OptimizeResult(x=np.zeros(10), success=True),
+                    OptimizeResult(x=verified, success=True),
                     RuntimeError("unexpected solver error"),
                 ]
                 with patch("overscreening_breakdown.collocation.spectral1d.optimize.root", side_effect=results):
@@ -214,6 +265,17 @@ class ScipySolverTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, "unexpected solver error"):
                         solver.solve_problem()
                 self.assertFalse(solver.is_converged())
+                self.assertIsNone(solver.get_scipy_result())
+
+    def test_scipy_diagnostics_clear_when_switching_back_to_newton(self):
+        solver = self.solver("root_no_jac")
+        solver.solve_problem()
+        self.assertIsNotNone(solver.get_scipy_result())
+        solver.set_method("newton")
+        solver.solve_problem()
+        self.assertTrue(solver.is_converged())
+        self.assertIsNone(solver.get_scipy_result())
+        self.assertIsNotNone(solver.get_newton_result())
 
     def test_scipy_methods_reject_mpmath(self):
         for method in ("root", "root_no_jac", "nonlin_solve"):

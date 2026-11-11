@@ -17,6 +17,7 @@ from overscreening_breakdown.nonlinear_solver import solve_newton
 from overscreening_breakdown.problems.flux import BoundFluxProblem
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.galerkin.solution import GalerkinSolution
+from overscreening_breakdown.initialization import validate_initializer
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class QuadratureIteration:
     jacobian_difference: object = None
     jacobian_target: object = None
     reason: str = ""
+    newton_result: object = None
 
 
 def _bind(problem, arithmetic):
@@ -116,7 +118,10 @@ def _owned_newton_result(result, arithmetic, coefficients):
                              target_norm=scalar(stage.target_norm), final_norm=scalar(stage.final_norm))
                      for stage in result.stages),
         history=tuple(replace(record, homotopy=scalar(record.homotopy),
-                              residual_norm=scalar(record.residual_norm), step=scalar(record.step))
+                              residual_norm=scalar(record.residual_norm), step=scalar(record.step),
+                              merit=None if record.merit is None else scalar(record.merit),
+                              gradient_norm=(None if record.gradient_norm is None
+                                             else scalar(record.gradient_norm)))
                       for record in result.history),
     )
 
@@ -125,19 +130,31 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
           method="newton", tolerance="1e-10", initial_guess=None,
           max_iterations=50, use_globalization=True, globalization_init="1",
           quadrature_order=None, subdivisions=1, quadrature_atol=None,
-          quadrature_rtol=None, max_refinements=3, verbose=False):
+          quadrature_rtol=None, max_refinements=3, verbose=False,
+          initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200,
+          newton_fallback=None, adjoint_max_steps=20):
     """Solve an unbound physical problem and return an evaluable solution.
 
     Collocation supports epsilon=1 and its existing method/boundary families.
     Galerkin supports the fourth-order half-line split formulation and Newton.
     Its ``converged`` flag requires both final-q=0 Newton convergence and an
     independent fixed-state residual/Jacobian quadrature comparison.
+    SciPy collocation methods expose ``scipy_result`` stop diagnostics and
+    require a freshly verified full q=0 residual, including boundary rows;
+    SciPy's success flag alone does not certify convergence.
 
     A solution object can restart the same solver/basis. Convert collocation
     explicitly with ``projection.project_collocation`` before a mixed restart.
     A raw vector is interpreted in the explicitly selected solver's basis.
     A callable initial guess has signature (x, arithmetic); Galerkin projects
     its u field and starts the independent w field at zero.
+
+    ``initializer='fsolve'`` is an optional bounded NumPy collocation prepass;
+    its evaluation budget includes residual and Jacobian calls. Accepted
+    candidates still require the main solver's convergence check.
+    ``newton_fallback='adjoint'`` enables native merit descent after a failed
+    Newton step, with at most ``adjoint_max_steps`` accepted recoveries per stage.
+    ``use_globalization`` controls homotopy; Newton backtracking remains active.
     """
     if solver not in ("collocation", "galerkin"):
         raise ValueError("solver must be collocation or galerkin")
@@ -146,6 +163,16 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
         raise ValueError("Galerkin supports newton; collocation supports newton/root/root_no_jac/nonlin_solve")
     if use_mpmath and method != "newton":
         raise ValueError("mpmath supports the newton method only")
+    validate_initializer(initializer, use_mpmath=use_mpmath, solver=solver,
+                         tolerance=initializer_tolerance,
+                         max_evaluations=initializer_max_evaluations)
+    if newton_fallback not in (None, "adjoint"):
+        raise ValueError("newton_fallback must be None or 'adjoint'")
+    if newton_fallback is not None and method != "newton":
+        raise ValueError("adjoint recovery requires the newton method")
+    if (isinstance(adjoint_max_steps, bool) or not isinstance(adjoint_max_steps, Integral)
+            or adjoint_max_steps < 0):
+        raise ValueError("adjoint_max_steps must be a nonnegative integer")
     if isinstance(N, bool) or not isinstance(N, Integral) or N < (2 if solver == "galerkin" else 1):
         raise ValueError("N is too small or is not an integer")
     if (isinstance(max_iterations, bool) or not isinstance(max_iterations, int)
@@ -178,6 +205,9 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
                 prec=precision, use_method=method, tolerance=tolerance,
                 total_iterations=max_iterations, use_globalization=use_globalization,
                 globalization_init=arithmetic.scalar(globalization_init),
+                initializer=initializer, initializer_tolerance=initializer_tolerance,
+                initializer_max_evaluations=int(initializer_max_evaluations),
+                newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
             )
             native_initial = None
             if initial_guess is not None:
@@ -189,9 +219,18 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
                 coefficients = tuple(arithmetic.scalar(value)
                                      for value in legacy.solve_problem(native_initial))
             result = _owned_newton_result(legacy.get_newton_result(), arithmetic, coefficients)
+            initialization = legacy.get_initialization_result()
+            if initialization is not None:
+                initialization = replace(
+                    initialization, state=arithmetic.vector(initialization.state),
+                    initial_norm=arithmetic.scalar(initialization.initial_norm),
+                    final_norm=arithmetic.scalar(initialization.final_norm),
+                )
             return CollocationSolution(
                 physical=physical, coefficients=coefficients, N=int(N), L=L, method=method,
                 converged=legacy.is_converged(), newton_result=result,
+                initialization_result=initialization,
+                scipy_result=legacy.get_scipy_result(),
             )
         finally:
             mp.mp.prec = previous_bits
@@ -219,10 +258,12 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
             assembly.nonlinear_system(initial_guess), atol=tolerance, rtol=0,
             max_iterations=max_iterations, use_globalization=use_globalization,
             globalization_init=globalization_init,
+            newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
         )
         if not result.converged:
             history.append(QuadratureIteration(assembly.plan.order, assembly.plan.subdivisions,
-                                               False, False, reason=result.reason))
+                                               False, False, reason=result.reason,
+                                               newton_result=result))
             break
         check = assembly.check_refinement(result.state, atol=atol, rtol=rtol)
         checked = check.converged
@@ -231,6 +272,7 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
             check.residual_difference, check.residual_target,
             check.jacobian_difference, check.jacobian_target,
             "converged" if checked else "quadrature_not_converged",
+            result,
         ))
         if checked or refinement == max_refinements:
             break

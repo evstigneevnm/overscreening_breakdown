@@ -24,6 +24,9 @@ class NonlinearSystem:
     scalar: Callable
     isfinite: Callable
     restart: Optional[Callable] = None
+    merit_gradient: Optional[Callable] = None
+    dot: Optional[Callable] = None
+    adjoint_direction: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,11 @@ class NewtonIteration:
     residual_norm: object
     step: object
     backtracks: int
+    kind: str = "newton"
+    merit: object = None
+    gradient_norm: object = None
+    recovery_reason: str = ""
+    evaluations: int = 0
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,9 @@ class NewtonStage:
     iterations: int
     converged: bool
     reason: str
+    adjoint_steps: int = 0
+    adjoint_evaluations: int = 0
+    recovery_reasons: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -57,6 +68,9 @@ class NewtonResult:
     iterations: int
     stages: tuple
     history: tuple
+    adjoint_steps: int = 0
+    adjoint_evaluations: int = 0
+    recovery_reasons: tuple = ()
 
 
 def solve_newton(
@@ -72,6 +86,8 @@ def solve_newton(
     min_step="1e-10",
     homotopy_cutoff="1e-11",
     callback=None,
+    newton_fallback=None,
+    adjoint_max_steps=20,
 ):
     """Solve the physical system at homotopy parameter zero.
 
@@ -90,14 +106,24 @@ def solve_newton(
 
     Linear solvers should translate known numerical failures into
     :class:`LinearSolveError`. Other exceptions propagate to the caller.
+
+    ``newton_fallback='adjoint'`` tries one native merit-descent step after a
+    failed linear solve, nonfinite Newton step, or failed Newton line search.
+    An accepted recovery retries Newton at the same q. ``adjoint_max_steps``
+    bounds accepted recovery steps per stage; ``iterations`` still counts
+    Newton attempts only. Stationarity never certifies a nonzero residual.
+    A non-Euclidean residual norm requires its matching merit_gradient callback.
     """
     for name, value, minimum in (
         ("max_iterations", max_iterations, 0),
         ("max_stages", max_stages, 1),
         ("max_backtracks", max_backtracks, 1),
+        ("adjoint_max_steps", adjoint_max_steps, 0),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"{name} must be an integer >= {minimum}")
+    if newton_fallback not in (None, "adjoint"):
+        raise ValueError("newton_fallback must be None or adjoint")
 
     scalar = system.scalar
     finite = system.isfinite
@@ -149,11 +175,14 @@ def solve_newton(
     q = zero
     stages, history = [], []
     total_iterations = 0
+    total_adjoint_steps = total_adjoint_evaluations = 0
+    recovery_reasons = []
 
     def result(converged, reason, norm):
         return NewtonResult(
             state.copy(), converged, reason, q, norm, total_iterations,
             tuple(stages), tuple(history),
+            total_adjoint_steps, total_adjoint_evaluations, tuple(recovery_reasons),
         )
 
     for stage_index in range(max_stages):
@@ -163,6 +192,8 @@ def solve_newton(
         if not finite(target):
             raise ValueError("residual tolerance overflowed in the selected arithmetic")
         stage_iterations = 0
+        stage_adjoint_steps = stage_adjoint_evaluations = 0
+        stage_recovery_reasons = []
         converged = residual is not None and norm <= target
         reason = "converged" if converged else "max_iterations"
 
@@ -172,6 +203,8 @@ def solve_newton(
             while not converged and stage_iterations < max_iterations:
                 stage_iterations += 1
                 total_iterations += 1
+                failure = None
+                jacobian = None
                 try:
                     try:
                         jacobian = system.jacobian(state, q)
@@ -181,17 +214,18 @@ def solve_newton(
                     if not finite_vector(matrix_entries(jacobian)):
                         reason = "nonfinite_jacobian"
                         break
-                    step = system.solve_linear(jacobian, -residual)
+                    # Recovery needs the original derivative even when a
+                    # supplied linear solver factors its input in place.
+                    linear_matrix = jacobian.copy() if newton_fallback == "adjoint" else jacobian
+                    step = system.solve_linear(linear_matrix, -residual)
                 except LinearSolveError:
-                    reason = "linear_solve_failed"
-                    break
-                if not finite_vector(step):
-                    reason = "nonfinite_step"
-                    break
+                    failure = "linear_solve_failed"
+                if failure is None and not finite_vector(step):
+                    failure = "nonfinite_step"
 
                 weight = one
                 accepted = False
-                for backtracks in range(max_backtracks):
+                for backtracks in range(max_backtracks) if failure is None else ():
                     if weight < min_step:
                         break
                     candidate = state + weight * step
@@ -211,13 +245,47 @@ def solve_newton(
                     weight *= half
 
                 if not accepted:
-                    reason = "line_search_failed"
-                    break
+                    failure = failure or "line_search_failed"
+                    reason = failure
+                    if newton_fallback != "adjoint" or jacobian is None:
+                        break
+                    if stage_adjoint_steps >= adjoint_max_steps:
+                        reason = "adjoint_budget_exhausted"
+                        break
+                    from overscreening_breakdown.nonlinear_globalization import adjoint_step
+                    stage_recovery_reasons.append(failure)
+                    recovery_reasons.append(failure)
+                    try:
+                        recovery = adjoint_step(
+                            system, state, residual, jacobian, q, residual_norm=norm,
+                            evaluate=evaluate, max_backtracks=max_backtracks, min_step=min_step,
+                        )
+                    except LinearSolveError:
+                        reason = "adjoint_direction_failed"
+                        break
+                    stage_adjoint_evaluations += recovery.evaluations
+                    total_adjoint_evaluations += recovery.evaluations
+                    if not recovery.accepted:
+                        reason = recovery.reason
+                        break
+                    state, residual, norm = recovery.state, recovery.residual, recovery.residual_norm
+                    stage_adjoint_steps += 1
+                    total_adjoint_steps += 1
+                    record = NewtonIteration(
+                        stage_index+1, total_iterations, q, norm, recovery.step,
+                        recovery.backtracks, kind="adjoint", merit=recovery.merit,
+                        gradient_norm=recovery.gradient_norm, recovery_reason=failure,
+                        evaluations=recovery.evaluations,
+                    )
+                    history.append(record)
+                    if callback is not None:
+                        callback(state.copy(), record)
                 converged = norm <= target
                 reason = "converged" if converged else "max_iterations"
 
         stages.append(NewtonStage(
-            q, initial_norm, target, norm, stage_iterations, converged, reason
+            q, initial_norm, target, norm, stage_iterations, converged, reason,
+            stage_adjoint_steps, stage_adjoint_evaluations, tuple(stage_recovery_reasons),
         ))
         if converged and q == zero:
             return result(True, "converged", norm)

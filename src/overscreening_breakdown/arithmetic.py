@@ -24,6 +24,18 @@ def _require_real_scalar(value):
         raise TypeError("A real scalar value is required")
 
 
+def _vector_entries(values):
+    """Read a one-dimensional sequence or native mpmath column vector."""
+    if hasattr(values, "rows") and hasattr(values, "cols"):
+        if values.cols != 1:
+            raise ValueError("A vector requires a one-dimensional sequence or column")
+        return [values[index, 0] for index in range(values.rows)]
+    values = list(values)
+    if np.ndim(values) != 1:
+        raise ValueError("A vector requires a one-dimensional sequence or column")
+    return values
+
+
 class _RealArithmetic:
     """Elementary functions shared by both real numerical backends."""
 
@@ -109,6 +121,22 @@ class NumpyArithmetic(_RealArithmetic):
         """Euclidean vector norm, or Frobenius matrix norm."""
         return np.linalg.norm(values)
 
+    def dot(self, left, right):
+        """Euclidean real vector pairing in float64 arithmetic."""
+        left = self.vector(_vector_entries(left))
+        right = self.vector(_vector_entries(right))
+        if len(left) != len(right):
+            raise ValueError("Dot-product vectors must have equal lengths")
+        return np.dot(left, right)
+
+    def transpose_matvec(self, matrix, vector):
+        """Return matrix.T @ vector as a native coefficient vector."""
+        matrix = self.matrix(matrix)
+        vector = self.vector(_vector_entries(vector))
+        if matrix.shape[0] != len(vector):
+            raise ValueError("Transpose product requires one vector entry per matrix row")
+        return matrix.T @ vector
+
     def solve(self, matrix, rhs):
         return np.linalg.solve(matrix, rhs)
 
@@ -178,6 +206,24 @@ class MpmathArithmetic(_RealArithmetic):
     def norm(self, values):
         """Euclidean vector norm, or Frobenius matrix norm."""
         return self._context.norm(values)
+
+    def dot(self, left, right):
+        """Euclidean real vector pairing at this owner's exact precision."""
+        left = [self.scalar(value) for value in _vector_entries(left)]
+        right = [self.scalar(value) for value in _vector_entries(right)]
+        if len(left) != len(right):
+            raise ValueError("Dot-product vectors must have equal lengths")
+        return self._context.fdot(left, right)
+
+    def transpose_matvec(self, matrix, vector):
+        """Return matrix.T @ vector without narrowing or global-context work."""
+        matrix = self.matrix(matrix)
+        vector = [self.scalar(value) for value in _vector_entries(vector)]
+        if matrix.rows != len(vector):
+            raise ValueError("Transpose product requires one vector entry per matrix row")
+        return self.vector(self._context.fdot(
+            [matrix[row, column] for row in range(matrix.rows)], vector)
+            for column in range(matrix.cols))
 
     def solve(self, matrix, rhs):
         return self._context.lu_solve(matrix, rhs)

@@ -36,6 +36,20 @@ otherwise the saved flags remain provenance rather than a new numerical
 certificate. Newton iteration objects and quadrature iteration histories are
 not serialized. Loading never changes global mpmath precision.
 
+The optional `initialization_result` (fsolve evaluation counts, status, residual
+norms, and candidate acceptance) is also runtime diagnostics only.
+The same applies to `scipy_result`: its SciPy stop status, message, evaluation
+counts and independently verified final residual are not serialized. Loading
+sets `scipy_result=None` and does not repeat residual verification. Saved
+convergence flags remain provenance under the arithmetic rules above.
+`newton_result.adjoint_steps`, `adjoint_evaluations`, `recovery_reasons`, and
+the per-step `history` records distinguish native adjoint recovery from Newton.
+Each Galerkin `quadrature_history` entry retains its own `newton_result` while
+the solve runs, including recovery used before the final quadrature plan.
+Loading a JSON snapshot does not reconstruct these objects or rerun an
+initializer. The numerical JSON schema and saved final flags are unchanged by
+the new recovery controls.
+
 The existing collocation `save_solution` still writes its compatible pickle
 format, now tagged `solver_type="collocation"`. Its reader accepts older
 untagged payloads and bare arrays and rejects tagged Galerkin data. Import

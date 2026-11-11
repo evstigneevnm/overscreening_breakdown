@@ -329,6 +329,22 @@ class GalerkinAssembly:
         self.check_precision()
         return self.arithmetic.norm(residual)
 
+    def merit_gradient(self, residual, jacobian):
+        """Coefficient gradient of the existing Euclidean residual merit."""
+        self.check_precision()
+        gradient = self.arithmetic.transpose_matvec(jacobian, residual)
+        if len(gradient) != self.unknown_count:
+            raise ValueError("Jacobian columns must match the mixed coefficient count")
+        return gradient
+
+    def adjoint_direction(self, gradient):
+        """Negative gradient in both independent conforming field spaces."""
+        self.check_precision()
+        gradient = self.arithmetic.vector(gradient)
+        if len(gradient) != self.unknown_count:
+            raise ValueError("Gradient size must match the mixed coefficient count")
+        return -gradient
+
     def nonlinear_system(self, initial_guess=None):
         """Build shared Newton callbacks; default state is (u=lift,w=0).
 
@@ -355,6 +371,8 @@ class GalerkinAssembly:
             solve_linear=solve_linear, residual_norm=self.residual_norm,
             initial_guess=lambda: initial.copy(), scalar=self.arithmetic.scalar,
             isfinite=self.arithmetic.isfinite,
+            merit_gradient=self.merit_gradient, dot=self.arithmetic.dot,
+            adjoint_direction=self.adjoint_direction,
         )
 
     def with_plan(self, plan):

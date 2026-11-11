@@ -300,6 +300,31 @@ converged while the overall result remains unconverged. `newton_result` and
 check is at `q=0`. These algebraic diagnostics remain distinct from physical
 field errors.
 
+For NumPy collocation methods `root`, `root_no_jac`, and `nonlin_solve`, the
+returned coefficients are checked against a freshly assembled residual at
+`q=0`. If `M=unknown_count`, convergence requires finite coefficients and all
+finite residual entries, including every tau boundary row, with
+
+\[
+\frac{\|R(c,0)\|_2}{\sqrt M}
+\le \texttt{tolerance}\sqrt M.
+\]
+
+The right side preserves the historical collocation Newton residual target.
+The HYBR tolerance supplied to SciPy is a step criterion; its success flag and
+cached residual do not replace this independent check. A stopped SciPy solve
+can still satisfy the residual target, while a reported SciPy success with a
+large or nonfinite residual remains unconverged.
+
+`scipy_result` records `method`, the certified `converged` flag and `reason`,
+`scipy_success`, `status`, `message`, `nfev`, `njev`, `residual_norm` (RMS),
+`residual_max`, `target_norm`, and `homotopy=0`. Evaluation counts are SciPy's
+reported counts and exclude the additional residual verification. The record
+is absent (`None`) for Newton and Galerkin solves. A new solve clears previous
+SciPy diagnostics before calling user callbacks. These checks certify the
+assembled algebraic equations at the requested tolerance; spatial error and
+manufactured field, PDE and boundary accuracy assertions remain independent.
+
 `initial_guess` can be a compatible solution object, a new-format saved path,
 raw coefficients in the selected basis, or a scalar callback
 `initial_guess(x, arithmetic)`. A solution restart must match the solver,
@@ -331,6 +356,87 @@ and existing return shape.
 The caller must supply integrable fields: a finite quadrature value does not
 establish integrability on the half-line. A collocation polynomial with a
 nonzero value at infinity is outside physical L2/H1 until explicitly corrected.
+
+### Newton recovery and initialization
+
+The default nonlinear iteration remains damped Newton. Optional controls act
+at different points of the solve:
+
+```python
+# SciPy initialization before a NumPy collocation solve.
+initialized = solve(problem, 8, solver="collocation", initializer="fsolve",
+                    initializer_tolerance="0.1", initializer_max_evaluations=200)
+
+# Native recovery during Newton, usable with either discretization/arithmetic.
+recovered = solve(problem, 4, solver="galerkin", use_mpmath=True,
+                  precision=50, tolerance="1e-35", newton_fallback="adjoint",
+                  adjoint_max_steps=20, use_globalization=True)
+```
+
+`initializer="fsolve"` is NumPy collocation only. It uses the analytic
+Jacobian and a hard combined residual/Jacobian evaluation budget. Its
+`initializer_tolerance` is a SciPy step criterion, not the requested final
+residual tolerance. The initializer retains the best finite improving
+candidate it evaluates; if none improves the starting state, that state is
+retained. SciPy's success/status and candidate acceptance are reported
+separately in `initialization_result`. Callback programming errors propagate.
+The selected final solver still determines convergence, including the
+verified physical equation at homotopy `q=0`. The former
+`use_adjoint_opimization` flag was this fsolve initialization and has been
+removed; it was not an adjoint algorithm.
+
+`newton_fallback="adjoint"` requires `method="newton"`. After a singular
+Newton solve or an exhausted Newton line search, it attempts residual-merit
+descent at the current fixed homotopy parameter. If `R` is the assembled
+residual and `J=DR`, the merit and its gradient are
+
+\[
+\Phi(z)=\tfrac12 R(z)^T W R(z),\qquad
+\nabla\Phi(z)=J(z)^T W R(z).
+\]
+
+`W` is the identity for the mixed algebraic Euclidean norm, and the identity
+divided by the collocation residual dimension for its RMS norm. The gradient
+is formed using the active NumPy or owned mpmath arithmetic. Galerkin uses
+the negative gradient. Collocation projects that direction onto the nullspace
+of its normalized linear boundary rows, preserving those boundary values
+during recovery. Galerkin's homogeneous first-field basis already preserves
+the essential wall and far-field traces; its second-field natural wall load
+remains in the residual.
+
+The admissible direction is scaled by a positive factor when its largest
+component exceeds one. Backtracking halves the step and requires a finite
+trial, strict residual-norm decrease, and Armijo sufficient decrease with
+coefficient `1e-4`. Nonfinite trial states can be rejected and retried;
+unrelated callback errors propagate. A zero admissible gradient or exhausted
+recovery budget can still leave the solve unconverged. This residual-merit
+adjoint is a discrete Jacobian-transpose operation, not a continuous adjoint
+PDE or an assertion of physical-error reduction.
+
+`adjoint_max_steps` bounds accepted recovery steps separately for each fixed
+homotopy stage. `use_globalization` continues to control homotopy independently;
+an accepted recovery step does not change `q`. No fallback step alone establishes
+convergence: the ordinary residual acceptance test, final `q=0` check, and
+Galerkin quadrature check remain necessary.
+
+`newton_result.iterations` counts attempted Newton solves. Accepted recovery
+steps and their evaluation costs are reported by `adjoint_steps` and
+`adjoint_evaluations`, with `recovery_reasons` on the result and stages.
+Iteration `history` records carry `kind="newton"` or `"adjoint"`, with merit,
+gradient norm, recovery reason, and evaluation count where applicable. A
+reported gradient norm is the full Euclidean gradient norm before collocation
+boundary projection. Galerkin `quadrature_history` entries retain the Newton
+result for each attempted plan, so earlier recovery remains inspectable.
+These objects and initializer diagnostics are runtime records; the saved
+solution JSON schema remains unchanged.
+
+The original VODE experiment has moved to
+[`experiments/legacy_adjoint_flow.py`](../experiments/legacy_adjoint_flow.py).
+It computes its historical matrix inverse only when explicitly called and
+retains the old preconditioned flow for research. It is separate from the
+native residual-merit fallback above. Ordinary notebook comparisons now use
+the public initializer/fallback controls, while unsupported boundary sweeps
+have a standalone research notebook under `experiments/notebooks/`.
 
 ## Manufactured catalog
 
@@ -454,6 +560,11 @@ decimal strings without a float64 intermediate; timing values remain measured
 wall-clock quantities. The solve timing includes assembly and linear solves;
 it is not a claimed breakdown of those internal costs. No warm-cache claim or
 performance threshold is inferred from it.
+SciPy collocation rows also retain a `scipy` record containing the stop status,
+message, evaluation counts, verified final residual and acceptance target.
+That record distinguishes SciPy termination from residual-certified convergence
+in both the common and legacy nonlinear benchmark paths; other methods record
+`scipy=null`.
 
 Physical errors use an independent fixed Gauss rule whose order is reported;
 increase `--diagnostic-order` to assess integration error. Galerkin L2/H1

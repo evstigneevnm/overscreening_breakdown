@@ -149,15 +149,18 @@ class GalerkinSolution:
     nonlinear_converged: bool = False
     quadrature_converged: bool = False
     newton_result: Any = field(default=None, repr=False)
+    initialization_result: Any = field(default=None, repr=False)
     quadrature_history: Tuple[Any, ...] = field(default=(), repr=False)
     projection_info: Tuple[Any, ...] = field(default=(), repr=False)
     _entries: Tuple[Any, ...] = field(default=(), repr=False)
 
     solver_type = "galerkin"
+    scipy_result = None
 
     def __init__(self, basis, physical, coefficients, *, plan=None, method="newton", converged=False,
                  nonlinear_converged=False, quadrature_converged=False,
-                 newton_result=None, quadrature_history=(), projection_info=()):
+                 newton_result=None, quadrature_history=(), projection_info=(),
+                 initialization_result=None):
         if not isinstance(basis, GalerkinBasis):
             raise TypeError("basis must be a GalerkinBasis")
         basis.check_precision()
@@ -181,6 +184,7 @@ class GalerkinSolution:
                             ("nonlinear_converged", bool(nonlinear_converged)),
                             ("quadrature_converged", bool(quadrature_converged)),
                             ("newton_result", newton_result),
+                            ("initialization_result", initialization_result),
                             ("quadrature_history", tuple(quadrature_history)),
                             ("projection_info", tuple(tuple(item) for item in projection_info)),
                             ("_entries", a+b)):

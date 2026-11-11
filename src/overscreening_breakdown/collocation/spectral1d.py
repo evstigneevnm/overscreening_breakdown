@@ -3,14 +3,16 @@ from scipy import optimize, integrate
 from matplotlib import pyplot as plt
 import pickle
 import mpmath #for custom pecision arithmetic
-from scipy.optimize import minimize
-from scipy.integrate import ode
 from inspect import isfunction, isclass
+from numbers import Integral
 
 from overscreening_breakdown.nonlinear_solver import LinearSolveError, NonlinearSystem, solve_newton
 from overscreening_breakdown.collocation.adapter import CollocationProblemAdapter, prepare_collocation_problem
 from overscreening_breakdown.arithmetic import NumpyArithmetic, MpmathArithmetic
 from overscreening_breakdown.rational_mapping import RationalHalfLineMap
+from overscreening_breakdown.initialization import initialize_fsolve, validate_initializer
+from overscreening_breakdown.collocation.globalization import CollocationMeritGeometry
+from overscreening_breakdown.scipy_solver import verify_scipy_result
 
 
 class basis_functions(object):
@@ -855,20 +857,35 @@ class collocation_discretization(basic_discretization):
 
 
 class solve_nonlinear_problem(collocation_discretization):
-    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, use_adjoint_opimization = False):  #log_10(2^53) \sim 16
+    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, *, initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200, newton_fallback=None, adjoint_max_steps=20):
+        validate_initializer(initializer, use_mpmath=use_mpmath,
+                             tolerance=initializer_tolerance,
+                             max_evaluations=initializer_max_evaluations)
+        if newton_fallback not in (None, "adjoint"):
+            raise ValueError("newton_fallback must be None or 'adjoint'")
+        if newton_fallback is not None and use_method != "newton":
+            raise ValueError("adjoint recovery requires the newton method")
+        if (isinstance(adjoint_max_steps, bool) or not isinstance(adjoint_max_steps, Integral)
+                or adjoint_max_steps < 0):
+            raise ValueError("adjoint_max_steps must be a nonnegative integer")
+        self.__initializer = initializer
+        self.__initializer_tolerance = initializer_tolerance
+        self.__initializer_max_evaluations = int(initializer_max_evaluations)
+        self.__newton_fallback = newton_fallback
+        self.__adjoint_max_steps = int(adjoint_max_steps)
         if problem is not None and domain is None:
             problem = prepare_collocation_problem(problem, use_mpmath=use_mpmath, prec=prec)
         if domain != None and problem == None:
             super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
-            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec, use_adjoint_opimization = use_adjoint_opimization)
+            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec)
         elif problem != None and domain == None:
             super().__init__(N = N, domain = problem.get_domain(), L = L, use_mpmath = use_mpmath, prec = prec)
-            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec, use_adjoint_opimization = use_adjoint_opimization)
+            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec)
             self.set_problem(problem)
         else:
             raise ValueError("solve_nonlinear_problem: either 'problem' or 'domain' must be provided in the constructor.")
 
-    def __common_constructor_operations(self, N, tolerance, use_method, visualize, total_iterations, use_globalization, globalization_init, use_mpmath, prec, use_adjoint_opimization):
+    def __common_constructor_operations(self, N, tolerance, use_method, visualize, total_iterations, use_globalization, globalization_init, use_mpmath, prec):
         self._N = N
         self.__use_method = use_method # "root", "nonlin_solve", "newton"
         self.__visualize = visualize #can be used only in "newton" method
@@ -876,14 +893,14 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__total_iterations = total_iterations
         self.__problem = None
         self.__S = None
-        self.__iS = None
         self.__use_globalization = use_globalization
         self.__globalization_init = globalization_init
         self.__globalization = 0
         self.__base_solution = None
         self.__converged = False
         self.__newton_result = None
-        self.__use_adjoint_opimization = use_adjoint_opimization
+        self.__initialization_result = None
+        self.__scipy_result = None
         self.__use_mpmath = super().is_using_mpmath()
         self.__precision = prec
         self.__mp_ref = super().get_mpmath_ref()
@@ -891,12 +908,10 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__dot = self.__mp_ref.fdot
             self.__sqrt = self.__mp_ref.sqrt
             self.__norm = self.__mp_ref.norm
-            self.__inv = self.__mp_ref.inverse
         else:
             self.__dot = np.dot    
             self.__sqrt = np.sqrt
             self.__norm = np.linalg.norm
-            self.__inv = np.linalg.inv
 
 
     def __form_matrices(self):
@@ -915,7 +930,6 @@ class solve_nonlinear_problem(collocation_discretization):
 
         self.__S = self.set_boundary_bilinear_form_tau_method(self.__S )
         # print(self.__S)
-        self.__iS = self.__inv(self.__S)
 
         # print("alpha = ", alpha)
         # print("S = ", self.__S )
@@ -1011,6 +1025,8 @@ class solve_nonlinear_problem(collocation_discretization):
     def solve_problem(self, c0 = None):
         self.__converged = False
         self.__newton_result = None
+        self.__initialization_result = None
+        self.__scipy_result = None
         if self.__problem==None:
             raise ValueError("one should call 'set_problem' before attempring to solve one.")
         validate = getattr(self.__problem, "validate_collocation_compatibility", None)
@@ -1018,8 +1034,6 @@ class solve_nonlinear_problem(collocation_discretization):
             validate()
         if self.__use_mpmath:
             print("Warning! Using mpmath with", self.__mp_ref.mp.dps, "significant digits and backend", self.__mp_ref.libmp.BACKEND ,". Solution will be slow!" )
-        if not self.__use_mpmath and self.__use_adjoint_opimization:
-            print("Using initial guess update by the adjoint optimization.")
 
         converged = False
         c_ref = self.__base_solution_expand()
@@ -1035,45 +1049,36 @@ class solve_nonlinear_problem(collocation_discretization):
         c = c0;
         self.__globalization = 0
 
-        # def fun(x):
-        #     vec = self.__residual_operator(x);
-        #     # iSvec = np.dot(self.__iS,vec)
-        #     iSvec = vec
-        #     return np.dot(iSvec, iSvec)
-        # def jac(x):
-        #     A = self.__linearization_operator(x)
-        #     AT = A.transpose()
-        #     valT = -2*np.dot(AT, x)
-        #     # iSval = np.dot(self.__iS,valT)
-        #     return valT
-
-        # if not self.__use_mpmath and self.__use_adjoint_opimization:
-        #     res = minimize(fun, c, method = self.__adjoint_method, jac = jac)
-        #     print(res)
-        #     c = res.x
-
-        # c = self.adjoint_descent(c, 1)    
-        
-        if not self.__use_mpmath and self.__use_adjoint_opimization:
-            res = optimize.fsolve(self.__residual_operator, c, fprime=self.__linearization_operator, xtol = 1.0e-1, full_output = True)
-            # print(res)
-            c = res[0]
+        if self.__initializer == "fsolve":
+            initial_system = NonlinearSystem(
+                residual=self.__residual_operator, jacobian=self.__linearization_operator,
+                solve_linear=self.solve,
+                residual_norm=lambda residual: self.__norm(residual)/self.__sqrt(self._M),
+                initial_guess=lambda: c.copy(), scalar=np.float64, isfinite=np.isfinite,
+            )
+            self.__initialization_result = initialize_fsolve(
+                initial_system, c.copy(), tolerance=self.__initializer_tolerance,
+                max_evaluations=self.__initializer_max_evaluations,
+            )
+            c = self.__initialization_result.state.copy()
 
         # Keep "nonlin_solve" as an alias for the public SciPy root solver.
-        if self.__use_method in ("root", "nonlin_solve"):
+        if self.__use_method in ("root", "root_no_jac", "nonlin_solve"):
             if self.__use_mpmath:
-                raise ValueError("only 'newton' can be used to solve with mpmath library")            
+                raise ValueError("only 'newton' can be used to solve with mpmath library")
+            target = np.float64(self.__tolerance)*self.__sqrt(self._M)
+            options = {} if self.__use_method == "root_no_jac" else {
+                "jac": self.__linearization_operator,
+            }
             res = optimize.root(self.__residual_operator, c, method="hybr",
-                                tol=self.__tolerance*self.__sqrt(self._M),
-                                jac=self.__linearization_operator)
-            converged = res.success
-            c = res.x;
-        elif self.__use_method == "root_no_jac":
-            if self.__use_mpmath:
-                raise ValueError("only 'newton' can be used to solve with mpmath library")            
-            res = optimize.root(self.__residual_operator, c, tol=self.__tolerance*self.__sqrt(self._M))
-            converged = res.success
-            c = res.x;
+                                tol=target, **options)
+            self.__scipy_result = verify_scipy_result(
+                res, residual=lambda coefficients: self.__residual_operator(coefficients, q=0),
+                target_norm=target, method=self.__use_method,
+            )
+            c = res.x
+            converged = self.__scipy_result.converged
+            print("scipy:", self.__scipy_result)
         elif self.__use_method == "newton":
             scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
 
@@ -1084,7 +1089,7 @@ class solve_nonlinear_problem(collocation_discretization):
                     raise LinearSolveError(str(error)) from error
 
             def iteration_callback(coefficients, iteration):
-                print("newton: iteration", iteration.iteration,
+                print(iteration.kind + ": iteration", iteration.iteration,
                       ", residual norm", self.__format_scalar(iteration.residual_norm),
                       ", weight =", self.__format_scalar(iteration.step),
                       ", homotopy =", self.__format_scalar(iteration.homotopy))
@@ -1092,6 +1097,41 @@ class solve_nonlinear_problem(collocation_discretization):
                     t = np.arange(0, np.pi, 0.01)
                     u = self.obtain_solution_in_basis(coefficients, t)
                     plt.plot(t, u, label=iteration.iteration)
+
+            merit_options = {}
+            if self.__newton_fallback == "adjoint":
+                # Use the actual tau rows, including nonzero prescribed data.
+                # The direction preserves their current traces; Newton still
+                # checks the full residual, including every boundary equation.
+                arithmetic = MpmathArithmetic(self.__precision) if self.__use_mpmath else NumpyArithmetic()
+                indices = ([0] + [self._N+j for j in range(1, self._additional_boundaries)]
+                           if self._additional_boundaries else [])
+                boundary_rows = [[self.__S[row, column] for column in range(self._M)]
+                                 for row in indices]
+                geometry = CollocationMeritGeometry(arithmetic, boundary_rows, self._M)
+
+                def adjoint_direction(gradient):
+                    try:
+                        return geometry.adjoint_direction(gradient)
+                    except (np.linalg.LinAlgError, ZeroDivisionError) as error:
+                        raise LinearSolveError(str(error)) from error
+
+                if self.__use_mpmath:
+                    # The collocation kernel still uses global mp matrices.
+                    # Convert clone-owned geometry results back to that matrix
+                    # class without passing through float64; the public wrapper
+                    # snapshots all diagnostics in its independent owner later.
+                    merit_options = dict(
+                        merit_gradient=lambda residual, matrix: self.__mp_ref.matrix(tuple(
+                            geometry.merit_gradient(residual, matrix))),
+                        dot=lambda left, right: scalar(geometry.dot(left, right)),
+                        adjoint_direction=lambda gradient: self.__mp_ref.matrix(tuple(
+                            adjoint_direction(gradient))),
+                    )
+                else:
+                    merit_options = dict(merit_gradient=geometry.merit_gradient,
+                                         dot=geometry.dot,
+                                         adjoint_direction=adjoint_direction)
 
             system = NonlinearSystem(
                 residual=self.__residual_operator,
@@ -1104,6 +1144,7 @@ class solve_nonlinear_problem(collocation_discretization):
                 # Expansion applies the wall conditions; zeroing all coefficients
                 # would erase nonzero essential data during continuation.
                 restart=lambda state, q: c_ref.copy(),
+                **merit_options,
             )
             # Preserve the historical RMS stopping threshold exposed by tolerance.
             target = scalar(self.__tolerance)*self.__sqrt(self._M)
@@ -1115,6 +1156,8 @@ class solve_nonlinear_problem(collocation_discretization):
                 max_iterations=self.__total_iterations,
                 use_globalization=self.__use_globalization,
                 globalization_init=self.__globalization_init,
+                newton_fallback=self.__newton_fallback,
+                adjoint_max_steps=self.__adjoint_max_steps,
                 callback=iteration_callback,
             )
             c = self.__newton_result.state
@@ -1131,14 +1174,17 @@ class solve_nonlinear_problem(collocation_discretization):
             print(sum(self.dddpsi(k, j[self._M-1] ) ))
             print(self.dddpsi(10, j[self._M-1] ))
 
-        try:
-            final_norm = self.residual_L2_norm(c)
-        except OverflowError:
-            # Newton already classifies overflowing physical callbacks as a
-            # numerical failure. Reporting that failure must not raise again.
-            if self.__newton_result is None:
-                raise
-            final_norm = self.__mp_ref.inf
+        if self.__scipy_result is not None:
+            final_norm = self.__scipy_result.residual_norm
+        else:
+            try:
+                final_norm = self.residual_L2_norm(c)
+            except OverflowError:
+                # Newton already classifies overflowing physical callbacks as a
+                # numerical failure. Reporting that failure must not raise again.
+                if self.__newton_result is None:
+                    raise
+                final_norm = self.__mp_ref.inf
         if converged:
             print("converged with norm =", self.__format_scalar(final_norm))
         else:
@@ -1154,6 +1200,14 @@ class solve_nonlinear_problem(collocation_discretization):
     def get_newton_result(self):
         """Return Newton stage/step diagnostics, or None for other methods."""
         return self.__newton_result
+
+    def get_initialization_result(self):
+        """Return optional initial-guess refinement diagnostics."""
+        return self.__initialization_result
+
+    def get_scipy_result(self):
+        """Return SciPy termination and independent residual diagnostics."""
+        return self.__scipy_result
 
     def __format_scalar(self, value):
         if self.__use_mpmath:
@@ -1244,35 +1298,3 @@ class solve_nonlinear_problem(collocation_discretization):
 
     def reset_base_solution(self):
         self.__base_solution = None
-
-    def use_adjoint_opimization(self, val):
-        if type(val) != bool:
-            raise ValueError("Only bool argument can be passed.")
-        self.__use_adjoint_opimization = val
-
-
-    #for a tests, but seem to fail in this problem
-    def adjoint_descent(self, c, exec_time):
-        def fun(t, x):
-            print(t)
-            vec = self.__residual_operator(x);
-            A = self.__linearization_operator(x)
-            AT = A.transpose()
-            valT = -2*np.dot(AT, vec)
-            valiST = np.dot(self.__iS, valT)
-            return valiST
-
-        r = ode(fun).set_integrator('vode', rtol = 1.0e-3, atol = 1.0e-5)
-        r.set_initial_value(c, 0)
-
-        residual_norm_b4 = self.residual_L2_norm(c)
-        dt = exec_time/1000;
-        while r.successful() and r.t < exec_time:
-            r.integrate(r.t+dt)
-
-
-        print(r)
-        c = r.y
-        residual_norm_aft = self.residual_L2_norm(c)
-        print("residual_norm_b4 = ", residual_norm_b4 , " residual_norm_aft = ", residual_norm_aft )
-        return c

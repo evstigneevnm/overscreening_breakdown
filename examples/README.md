@@ -58,7 +58,19 @@ parameters and sweep sizes are retained, and stale outputs are cleared. They
 import the installed package without changing directories. Set
 `OVERSCREENING_OUTPUT_DIR` to choose where saved files go. Ordinary solves and
 typed restarts use the common interface and immutable `BSKProblem` descriptions.
-Explicitly labelled adjoint and
-unsupported boundary/operator experiments retain the canonical legacy
-collocation path. Those full sweeps are opt-in; CI executes the bounded scripts
-and checks notebook structure without running the expensive cells.
+The ordinary execution, finite-segment, and mu-sweep notebooks use only public
+`solve` calls. Their historical "adjoint initialization" was SciPy fsolve;
+it is now named `initializer="fsolve"` and requested only for NumPy
+collocation. The 120-digit experiment explicitly uses `initializer=None`.
+`newton_fallback="adjoint"` enables a separate native recovery method in either
+solver and arithmetic. A bounded comparison reports actual recovery counts,
+which can be zero when Newton succeeds directly. `use_globalization` retains
+its independent homotopy meaning.
+
+Unsupported delta-zero plus third-derivative wall-data sweeps live separately
+in [`legacy_boundary_experiments.ipynb`](../experiments/notebooks/legacy_boundary_experiments.ipynb)
+with standalone canonical legacy setup. The general-operator notebook remains
+explicitly legacy. The unused historical SciPy/VODE coefficient flow is retained
+as [`experiments/legacy_adjoint_flow.py`](../experiments/legacy_adjoint_flow.py),
+outside the native nonlinear solver. Full research sweeps are opt-in; CI checks
+the notebook setup and bounded comparison without running the expensive cells.
