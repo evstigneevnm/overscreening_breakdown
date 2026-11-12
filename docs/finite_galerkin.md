@@ -1,5 +1,13 @@
 # Finite-interval mixed Galerkin
 
+Start with the [guided finite-segment notebook](../examples/notebooks/segment_execution_example_galerkin_discontinuous.ipynb)
+for explicit BSK and manufactured problem definitions, material tables with
+1, 2, 3, 5, 7, or 10 interfaces, physical field/error plots, and continuation
+diagnostics. Every solve has an editable N and absolute Newton residual target.
+The optional N study holds R fixed; the separate R study holds material
+interface positions and N fixed. Larger sweeps, high precision, homotopy
+comparisons, and exports are disabled initially.
+
 Use the common `solve` interface for
 
 \[

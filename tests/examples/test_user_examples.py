@@ -155,7 +155,8 @@ class UserExampleTests(unittest.TestCase):
         notebooks = sorted((ROOT/"examples"/"notebooks").glob("*.ipynb"))
         self.assertEqual({path.name for path in notebooks}, {
             "execution_example.ipynb", "execution_example_galerkin_discontinuous.ipynb",
-            "segment_execution_example.ipynb", "test_different_mu.ipynb",
+            "segment_execution_example.ipynb", "segment_execution_example_galerkin_discontinuous.ipynb",
+            "test_different_mu.ipynb",
             "examples_problems_updated_testing.ipynb",
         })
         self.assertFalse(list((ROOT/"examples").glob("*.ipynb")))
@@ -177,10 +178,16 @@ class UserExampleTests(unittest.TestCase):
                 self.assertNotIn("from spectral1d import", source)
                 self.assertNotIn("from overscreening_breakdown import overscreening_breakdown", source)
                 self.assertIn("overscreening_breakdown", source)
-                if path.name == "execution_example_galerkin_discontinuous.ipynb":
-                    self.assertIn("LayeredMaterial", source)
-                    self.assertIn("run_experiment", source)
+                if path.name in ("execution_example_galerkin_discontinuous.ipynb",
+                                 "segment_execution_example_galerkin_discontinuous.ipynb"):
+                    self.assertIn("run_defined_problem", source)
                     self.assertIn("report_experiment", source)
+                    if path.name.startswith("segment_"):
+                        self.assertIn("segment_material", source)
+                        self.assertIn("BSKProblem", source)
+                        self.assertIn("FluxProblem", source)
+                    else:
+                        self.assertIn("LayeredMaterial", source)
                     self.assertNotIn("verbose=", source)
                 elif path.name != "examples_problems_updated_testing.ipynb":
                     self.assertIn("BSKProblem", source)

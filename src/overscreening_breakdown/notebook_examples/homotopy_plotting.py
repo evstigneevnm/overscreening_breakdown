@@ -10,7 +10,8 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 from overscreening_breakdown.notebook_examples.discontinuous_plotting import (
-    _display, _draw_pieces, _experiment, _finish_axis, _guides, _segments, _title,
+    _display, _draw_pieces, _experiment, _finish_axis, _guides, _plot_limit,
+    _resolution_label, _same_domain, _segments, _title,
 )
 
 
@@ -85,7 +86,7 @@ def plot_homotopy_path(experiment):
     return figure
 
 
-def plot_homotopy_comparison(results, *, x_max="8", samples=60):
+def plot_homotopy_comparison(results, *, x_max=None, samples=60):
     """Compare u, w, and model flux for labelled experiment results.
 
     A failed solve is explicitly labelled as an unverified partial result and
@@ -94,17 +95,25 @@ def plot_homotopy_comparison(results, *, x_max="8", samples=60):
     """
     if not isinstance(results, Mapping) or not results:
         raise ValueError("provide a nonempty mapping of labels to experiment results")
+    prepared, first = [], None
+    for label, result in results.items():
+        solution, arithmetic = _experiment(result)
+        if first is not None and not _same_domain(first, solution):
+            raise ValueError("continuation comparisons require matching physical domains")
+        first = solution if first is None else first
+        right = _plot_limit(solution, x_max)
+        segments = tuple(_segments(arithmetic, solution.physical.epsilon.interfaces, right, samples))
+        prepared.append((label, result, solution, arithmetic, right, segments))
     figure, axes = plt.subplots(1, 3, figsize=(15, 4.3), squeeze=False)
     axes = tuple(axes.flat)
     interfaces, resolutions = set(), []
     reference_result = None
-    for index, (label, result) in enumerate(results.items()):
-        solution, arithmetic = _experiment(result)
+    for index, (label, result, solution, arithmetic, right, segments) in enumerate(prepared):
         coefficient = solution.physical.epsilon
-        segments = list(_segments(arithmetic, coefficient.interfaces, x_max, samples))
         interfaces.update(float(value) for value in coefficient.interfaces)
-        if solution.N not in resolutions:
-            resolutions.append(solution.N)
+        size = _resolution_label(solution)
+        if size not in resolutions:
+            resolutions.append(size)
         if reference_result is None and getattr(result, "case", None) is not None:
             reference_result = result
         verified = getattr(solution, "converged", False)
@@ -114,17 +123,18 @@ def plot_homotopy_comparison(results, *, x_max="8", samples=60):
                          color="C{}".format(index % 10), linestyle="-" if verified else ":")
     if reference_result is not None:
         solution, arithmetic = _experiment(reference_result)
-        segments = list(_segments(arithmetic, solution.physical.epsilon.interfaces, x_max, samples))
+        segments = tuple(_segments(arithmetic, solution.physical.epsilon.interfaces,
+                                   _plot_limit(solution, x_max), samples))
         for axis, field in zip(axes, ("u", "w", "flux")):
             callback = getattr(reference_result.case, field)
             _draw_pieces(axis, segments, lambda x, f=callback: f(x, arithmetic),
                          label="known answer", color="black", linestyle="--")
     labels = ("potential u", "curvature field w", "model flux J")
     for axis, label in zip(axes, labels):
-        _guides(axis, sorted(interfaces), float(x_max))
+        _guides(axis, sorted(interfaces), float(prepared[0][4]))
         axis.set_title(label)
         _finish_axis(axis, ylabel=label)
-    resolution = ", ".join("N={} ({} unknowns)".format(N, 2*N-1) for N in resolutions)
+    resolution = ", ".join(resolutions)
     figure.suptitle("Continuation comparison: {}\nVerification status is shown for each calculation".format(resolution))
     figure.tight_layout(rect=(0, 0, 1, 0.86))
     return figure

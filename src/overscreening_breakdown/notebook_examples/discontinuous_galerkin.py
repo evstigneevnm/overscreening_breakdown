@@ -150,7 +150,7 @@ def _newton_tolerance(value, options):
     return native, requested
 
 
-def _check_material(material, actual):
+def _check_material(material, actual, domain=None):
     """Check a supplied material declaration against the physical coefficient."""
     a = actual.arithmetic
     expected = _coefficient(material).bind(a)
@@ -159,15 +159,39 @@ def _check_material(material, actual):
         for name in ("lower_bound", "upper_bound", "wall_value")
     )):
         raise ValueError("material declaration does not match the supplied problem epsilon")
-    zero, one = a.scalar(0), a.scalar(1)
-    starts = (zero,)+actual.interfaces
+    left, right = ((a.scalar(0), a.inf) if domain is None
+                   else tuple(a.scalar(value) for value in domain))
+    if any(not left < point < right for point in actual.interfaces):
+        raise ValueError("material interfaces must lie strictly inside the supplied problem domain")
+    one = a.scalar(1)
+    starts = (left,)+actual.interfaces
     samples = set(starts)
-    samples.update((left+right)/2 for left, right in zip(starts, starts[1:]))
-    tail = starts[-1]
-    samples.update((tail+one, tail+2*one, tail+8*one))
+    if a.isfinite(right):
+        boundaries = starts+(right,)
+        samples.add(right)
+        samples.update((start+end)/2 for start, end in zip(boundaries, boundaries[1:]))
+    else:
+        samples.update((start+end)/2 for start, end in zip(starts, starts[1:]))
+        tail = starts[-1]
+        samples.update((tail+one, tail+2*one, tail+8*one))
     for x in samples:
         if expected(x) != actual(x):
             raise ValueError("material values do not match the supplied problem epsilon")
+
+
+def _solution_domain(solution):
+    a = solution.arithmetic
+    domain = getattr(solution, "domain", getattr(solution.physical, "domain", (0, a.inf)))
+    return tuple(a.scalar(value) for value in domain)
+
+
+def _field_plan(solution, order):
+    """Build a physical rule in the solution's actual geometry."""
+    a = solution.arithmetic
+    domain = _solution_domain(solution)
+    geometry = (dict(domain=domain) if a.isfinite(domain[1]) else dict(L=solution.L))
+    return QuadratureFactory(a, interfaces=solution.physical.epsilon.interfaces,
+                             **geometry).plan(order, solution.plan.subdivisions)
 
 
 def _defined_physical_settings(problem, solution):
@@ -208,27 +232,36 @@ def run_defined_problem(problem, *, N, newton_atol, material, case=None, model="
     if options["quadrature_order"] is None:
         options["quadrature_order"] = 2*N+4
     _coefficient(material)
+    a = MpmathArithmetic(options["precision"]) if options["use_mpmath"] else NumpyArithmetic()
+    raw_domain = getattr(problem, "domain", (0, "inf"))
+    domain = tuple(a.scalar(value) for value in raw_domain)
+    finite_domain = a.isfinite(domain[1])
+    if finite_domain:
+        if numerical is not None and "L" in numerical:
+            raise ValueError("finite Galerkin geometry is set by the problem domain; L is a half-line parameter")
+        options.pop("L", None)
     description = getattr(problem, "epsilon", None)
     if callable(getattr(description, "bind", None)):
-        a = MpmathArithmetic(options["precision"]) if options["use_mpmath"] else NumpyArithmetic()
-        _check_material(material, description.bind(a))
+        _check_material(material, description.bind(a), domain)
     reporter = ProgressReporter(verbosity=verbosity)
     if reporter.verbosity:
         arithmetic = ("mpmath ({} decimal digits)".format(options["precision"])
                       if options["use_mpmath"] else
                       "NumPy float64 ({} decimal digits)".format(NumpyArithmetic.dps))
         print("{} | Galerkin N={}, {} unknowns | {} | newton_atol={} (absolute Euclidean residual).".format(
-            model, N, 2*N-1, arithmetic, requested_atol), flush=True)
+            model, N, 2*N if finite_domain else 2*N-1, arithmetic, requested_atol), flush=True)
     started = perf_counter()
     solution = solve(problem, N, solver="galerkin", verbosity=verbosity, **options)
     elapsed = perf_counter()-started
-    _check_material(material, solution.physical.epsilon)
+    _check_material(material, solution.physical.epsilon, solution.physical.domain)
     physical, definition = _defined_physical_settings(problem, solution)
     settings = dict(model=model, accuracy=accuracy, material=_material_settings(material),
                     physical=physical, definition=definition,
                     numerical=dict(N=N, newton_atol=requested_atol, **{
-                        key: value for key, value in options.items() if key != "initial_guess"}),
-                    warm_start=options.get("initial_guess") is not None)
+                        key: value for key, value in options.items()
+                        if key not in ("initial_guess", "progress_callback")}),
+                    warm_start=options.get("initial_guess") is not None,
+                    progress_observer_attached=options.get("progress_callback") is not None)
     return ExperimentResult(model, accuracy, material, solution, case,
                             _freeze(_json_value(settings, solution.arithmetic)), elapsed,
                             MappingProxyType(dict(N=N, **options)), problem=problem)
@@ -296,6 +329,9 @@ def report_experiment(result, *, resolution=None):
                  sum(item.iterations for item in history),
                  "yes" if any(item.reference_result is not None for item in history) else "no",
                  result.elapsed_seconds)]
+    domain = _solution_domain(solution)
+    if a.isfinite(domain[1]):
+        lines.insert(1, "Physical domain: [{}, {}].".format(_number(domain[0], a, 7), _number(domain[1], a, 7)))
     final = solution.newton_result
     if final.homotopy == 0:
         lines.append("Final physical residual norm: {} (Euclidean).".format(
@@ -344,8 +380,7 @@ def manufactured_errors(result, *, order=None):
     if result.case is None:
         raise ValueError("the BSK model has no supplied exact solution")
     solution, a = result.solution, result.solution.arithmetic
-    plan = QuadratureFactory(a, L=solution.L, interfaces=solution.physical.epsilon.interfaces).plan(
-        order or max(2*solution.plan.order, 2*solution.N+8), solution.plan.subdivisions)
+    plan = _field_plan(solution, order or max(2*solution.plan.order, 2*solution.N+8))
     return {name: solution.l2_error(lambda x, field=name: getattr(result.case, field)(x, a),
                                     field=name, plan=plan) for name in ("u", "w", "flux")}
 
@@ -370,8 +405,7 @@ def manufactured_error_metrics(result, *, order=None):
         raise ValueError("the BSK model has no supplied exact solution")
     solution, a = result.solution, result.solution.arithmetic
     selected_order = max(2*solution.plan.order, 2*solution.N+8) if order is None else order
-    plan = QuadratureFactory(a, L=solution.L, interfaces=solution.physical.epsilon.interfaces).plan(
-        selected_order, solution.plan.subdivisions)
+    plan = _field_plan(solution, selected_order)
     metrics = {}
     for field_name in ("u", "w", "flux"):
         def reference(x, field=field_name):
@@ -448,9 +482,12 @@ def _convergence_signature(result):
     check = getattr(result.solution, "check_precision", None)
     if callable(check):
         check()
+    domain = _solution_domain(result.solution)
+    geometry = (("affine_interval", domain) if a.isfinite(domain[1])
+                else ("rational_half_line", result.solution.L))
     return dict(
         model=result.model, material=result.settings["material"], physical=result.settings["physical"],
-        arithmetic=(a.use_mpmath, a.dps, a.backend), mapping_length=result.solution.L,
+        arithmetic=(a.use_mpmath, a.dps, a.backend), geometry=geometry,
         numerical={key: value for key, value in result.settings["numerical"].items()
                    if key not in ("N", "quadrature_order", "newton_atol")},
     )
@@ -615,8 +652,7 @@ def compare_resolution(result, *, fine_N, newton_atol, verbosity=0):
     # supplies every physical callback and parameter for this new solve.
     fine = replace(fine, settings=_freeze({**fine.settings, "physical": result.settings["physical"]}))
     solution, a = fine.solution, fine.solution.arithmetic
-    plan = QuadratureFactory(a, L=solution.L, interfaces=solution.physical.epsilon.interfaces).plan(
-        2*solution.plan.order, solution.plan.subdivisions)
+    plan = _field_plan(solution, 2*solution.plan.order)
     changes = {}
     for field_name in ("u", "w", "flux"):
         old = getattr(result.solution, field_name)
@@ -659,7 +695,7 @@ def run_preset_sweep(*, N_by_interfaces, newton_atol,
             for count in counts for model in models]
 
 
-def export_experiment(result, directory, *, figures=None, samples=101, x_max="8", resolution=None):
+def export_experiment(result, directory, *, figures=None, samples=101, x_max=None, resolution=None):
     """Write settings, a typed solution, native decimal profiles, and optional PDFs.
 
     Custom executable coefficient functions are never serialized. Their
@@ -669,9 +705,14 @@ def export_experiment(result, directory, *, figures=None, samples=101, x_max="8"
     if isinstance(samples, bool) or not isinstance(samples, Integral) or samples < 2:
         raise ValueError("export samples must be an integer of at least two")
     solution, a = result.solution, result.solution.arithmetic
-    right = a.scalar(x_max)
-    if not a.isfinite(right) or right <= 0:
-        raise ValueError("export x_max must be finite and positive")
+    domain = _solution_domain(solution)
+    left = domain[0]
+    finite = a.isfinite(domain[1])
+    right = a.scalar(domain[1] if x_max is None and finite else "8" if x_max is None else x_max)
+    if not a.isfinite(right) or right <= left:
+        raise ValueError("export x_max must be finite and greater than the left domain endpoint")
+    if finite and right > domain[1]:
+        raise ValueError("export x_max lies outside the finite problem domain")
     directory = Path(directory).expanduser()
     directory.mkdir(parents=True, exist_ok=True)
     paths = {name: directory/filename for name, filename in (
@@ -700,7 +741,7 @@ def export_experiment(result, directory, *, figures=None, samples=101, x_max="8"
     def decimal(value):
         return a.context.nstr(value, n=a.dps+3) if a.use_mpmath else format(float(value), ".17g")
 
-    points = [right*a.scalar(index)/(int(samples)-1) for index in range(int(samples))]
+    points = [left+(right-left)*a.scalar(index)/(int(samples)-1) for index in range(int(samples))]
     points = sorted(set(points+list(point for point in solution.physical.epsilon.interfaces if point <= right)))
     with paths["profiles"].open("w", newline="") as stream:
         writer = csv.writer(stream)

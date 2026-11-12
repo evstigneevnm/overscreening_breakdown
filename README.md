@@ -61,6 +61,9 @@ Finite Galerkin uses `problem.domain=(0, R)`, with left value/third-derivative
 and right value/slope boundary data. It supports variable and discontinuous
 epsilon and stores `2*N` unknowns. See the [finite-interval guide](docs/finite_galerkin.md)
 for the spaces, boundary conventions, and restart rules.
+The [finite-segment notebook](examples/notebooks/segment_execution_example_galerkin_discontinuous.ipynb)
+provides editable BSK and manufactured definitions, discontinuous materials,
+and separate experiments for resolution, interval size, and homotopy recovery.
 
 NumPy collocation can refine its starting guess with `initializer="fsolve"`.
 Both solvers can enable native adjoint recovery with `newton_fallback="adjoint"`,

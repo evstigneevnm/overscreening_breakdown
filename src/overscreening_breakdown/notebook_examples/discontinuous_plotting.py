@@ -6,6 +6,7 @@ curve is drawn one material interval at a time, with no line across a jump.
 These helpers neither solve problems nor display or save the returned figures.
 """
 
+from collections.abc import Mapping
 from numbers import Integral
 
 import numpy as np
@@ -84,13 +85,57 @@ def _experiment(result):
     return solution, solution.arithmetic
 
 
+def _domain(solution):
+    a = solution.arithmetic
+    physical = getattr(solution, "physical", None)
+    domain = getattr(solution, "domain", getattr(physical, "domain", (0, a.inf)))
+    if len(domain) != 2 or a.scalar(domain[0]) != 0:
+        raise ValueError("guided plots require a domain starting at zero")
+    return tuple(a.scalar(value) for value in domain)
+
+
+def _plot_limit(solution, x_max=None):
+    a = solution.arithmetic
+    _, end = _domain(solution)
+    right = (end if a.isfinite(end) else a.scalar(8)) if x_max is None else a.scalar(x_max)
+    if not a.isfinite(right) or right <= 0:
+        raise ValueError("the plot limit x_max must be finite and positive")
+    if a.isfinite(end) and right > end:
+        raise ValueError("the plot limit x_max cannot exceed the finite endpoint R")
+    return right
+
+
+def _same_domain(first, second):
+    # Compare declarations at their common precision; field evaluation still
+    # uses each solution's full native owner and coordinates independently.
+    first_owner, second_owner = first.arithmetic, second.arithmetic
+    first_bits = first_owner.context.prec if first_owner.use_mpmath else 53
+    second_bits = second_owner.context.prec if second_owner.use_mpmath else 53
+    a = first_owner if first_bits <= second_bits else second_owner
+    return tuple(a.scalar(value) for value in _domain(first)) == tuple(
+        a.scalar(value) for value in _domain(second))
+
+
+def _scalar_label(value, arithmetic):
+    return (arithmetic.context.nstr(value, n=6) if arithmetic.use_mpmath
+            else format(value, ".6g"))
+
+
+def _resolution_label(solution):
+    a = solution.arithmetic
+    _, end = _domain(solution)
+    unknowns = getattr(solution, "unknown_count", None)
+    count = "{} unknowns".format(unknowns) if unknowns is not None else "unknown count not recorded"
+    size = "N={} ({})".format(solution.N, count)
+    return "R={}, {}".format(_scalar_label(end, a), size) if a.isfinite(end) else size
+
+
 def _title(result, description):
     solution = result.solution
     model = str(getattr(result, "model", "calculation")).replace("_", " ")
     status = ("equations and integration verified" if getattr(solution, "converged", False)
               else "unverified calculation")
-    return "{}: {}\nN={}, {} unknowns — {}".format(
-        model, description, solution.N, 2*solution.N-1, status)
+    return "{}: {}\n{} — {}".format(model, description, _resolution_label(solution), status)
 
 
 def _newton_tolerance_label(result, arithmetic):
@@ -107,8 +152,8 @@ def _newton_tolerance_label(result, arithmetic):
 def plot_material(material, *, x_max="8", samples=60, ax=None, accuracy="standard"):
     """Preview a layer table or declared custom coefficient on a finite window.
 
-    The mathematical domain still extends to infinity. ``high_precision``
-    binds the description in an independent 50-digit context for sampling.
+    The shown window does not determine a solver's physical domain.
+    ``high_precision`` uses an independent 50-digit context for sampling.
     """
     if accuracy not in ("standard", "strict_integration", "high_precision"):
         raise ValueError("accuracy must be standard, strict_integration, or high_precision")
@@ -134,19 +179,28 @@ def plot_material(material, *, x_max="8", samples=60, ax=None, accuracy="standar
     return figure
 
 
-def plot_material_gallery(kind="constant", *, x_max="8", samples=40):
-    """Preview all six requested interface counts without running any solve."""
-    figure, axes = plt.subplots(2, 3, figsize=(13, 6.5), squeeze=False)
-    for count, axis in zip(SUPPORTED_INTERFACE_COUNTS, axes.flat):
-        plot_material(preset_material(count, kind=kind), x_max=x_max, samples=samples, ax=axis)
+def plot_material_gallery(kind="constant", *, x_max="8", samples=40, materials=None):
+    """Preview supplied material definitions or the six half-line presets."""
+    if materials is None:
+        materials = {count: preset_material(count, kind=kind) for count in SUPPORTED_INTERFACE_COUNTS}
+    if not isinstance(materials, Mapping) or not materials:
+        raise ValueError("materials must be a nonempty mapping of interface counts to definitions")
+    columns = min(3, len(materials))
+    rows = (len(materials)+columns-1)//columns
+    figure, axes = plt.subplots(rows, columns, figsize=(13 if columns == 3 else 7, 3.25*rows), squeeze=False)
+    for (_, material), axis in zip(materials.items(), axes.flat):
+        plot_material(material, x_max=x_max, samples=samples, ax=axis)
+    for axis in tuple(axes.flat)[len(materials):]:
+        axis.set_visible(False)
     figure.suptitle("Material presets: {} layers".format(kind))
     figure.tight_layout(rect=(0, 0, 1, 0.94))
     return figure
 
 
-def plot_experiment(result, *, x_max="8", samples=60):
+def plot_experiment(result, *, x_max=None, samples=60):
     """Show epsilon, potential u, independent field w, and model flux J."""
     solution, arithmetic = _experiment(result)
+    x_max = _plot_limit(solution, x_max)
     coefficient = solution.physical.epsilon
     segments = list(_segments(arithmetic, coefficient.interfaces, x_max, samples))
     figure, axes = plt.subplots(2, 2, figsize=(12, 7), squeeze=False)
@@ -169,9 +223,10 @@ def plot_experiment(result, *, x_max="8", samples=60):
     return figure
 
 
-def plot_errors(result, *, x_max="8", samples=60):
+def plot_errors(result, *, x_max=None, samples=60):
     """Show native-arithmetic absolute errors against a manufactured case."""
     solution, arithmetic = _experiment(result)
+    x_max = _plot_limit(solution, x_max)
     case = getattr(result, "case", None)
     if case is None:
         raise ValueError("a known-answer manufactured case is needed for an error plot")
@@ -203,6 +258,61 @@ def plot_errors(result, *, x_max="8", samples=60):
         _finish_axis(axis, ylabel="absolute error")
     figure.suptitle(_title(result, "errors against the known answer"))
     figure.tight_layout(rect=(0, 0, 1, 0.9))
+    return figure
+
+
+def _domain_comparison_signature(result):
+    solution, a = _experiment(result)
+    settings = getattr(result, "settings", {})
+    if not all(name in settings for name in ("material", "physical", "numerical")):
+        raise ValueError("R-only sensitivity requires recorded fixed physical and numerical settings")
+    return dict(
+        model=getattr(result, "model", None), material=settings["material"],
+        physical={key: value for key, value in settings["physical"].items() if key not in ("domain", "R")},
+        numerical={key: value for key, value in settings["numerical"].items() if key != "newton_atol"},
+        arithmetic=(a.use_mpmath, a.dps, a.backend), N=solution.N,
+    )
+
+
+def plot_domain_comparison(results, *, samples=60):
+    """Compare finite domains at fixed physics, arithmetic, N and solver targets.
+
+    Each field is shown only on its own interval. These curves measure domain
+    sensitivity; spatial accuracy is assessed in a separate resolution study.
+    Metadata checks cannot certify equality of arbitrary executable callbacks.
+    """
+    if not isinstance(results, Mapping) or not results:
+        raise ValueError("provide a nonempty mapping from R values to experiment results")
+    prepared, signature = [], None
+    for endpoint, result in results.items():
+        solution, a = _experiment(result)
+        _, end = _domain(solution)
+        if not a.isfinite(end) or a.scalar(endpoint) != end:
+            raise ValueError("domain comparison keys must match each finite endpoint R")
+        current = _domain_comparison_signature(result)
+        if signature is not None and current != signature:
+            raise ValueError("R-only sensitivity requires fixed physics, material, arithmetic, N and numerical settings")
+        signature = current
+        segments = tuple(_segments(a, solution.physical.epsilon.interfaces, end, samples))
+        prepared.append((result, solution, a, end, segments))
+    figure, axes = plt.subplots(1, 3, figsize=(15, 4.5), squeeze=False)
+    interfaces = set()
+    for index, (result, solution, a, end, segments) in enumerate(prepared):
+        verified = solution.converged
+        label = "{}; {}".format(_resolution_label(solution), "verified" if verified else "unverified partial result")
+        interfaces.update(float(point) for point in solution.physical.epsilon.interfaces)
+        for axis, field in zip(axes.flat, ("u", "w", "flux")):
+            _draw_pieces(axis, segments, getattr(solution, field), label=label,
+                         color="C{}".format(index % 10), linestyle="-" if verified else ":")
+    maximum = max(float(item[3]) for item in prepared)
+    for axis, label in zip(axes.flat, ("potential u", "curvature field w", "model flux J")):
+        _guides(axis, sorted(interfaces), maximum)
+        axis.set_title(label)
+        _finish_axis(axis, ylabel=label)
+    first = prepared[0][1]
+    figure.suptitle("Domain sensitivity at fixed N={} ({} unknowns)\nR={}; status is shown for each calculation".format(
+        first.N, first.unknown_count, ", ".join(_scalar_label(item[3], item[2]) for item in prepared)))
+    figure.tight_layout(rect=(0, 0, 1, 0.85))
     return figure
 
 
