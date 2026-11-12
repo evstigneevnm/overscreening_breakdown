@@ -278,9 +278,10 @@ u_at_one, w_at_one = mixed.u("1"), mixed.w("1")
 
 Collocation retains `newton`, `root`, `root_no_jac`, and `nonlin_solve` with
 NumPy, and Newton with mpmath. Galerkin uses the shared Newton driver with
-damping and continuation. A finite interval or `delta=0` can still use the
-supported collocation boundary families; the mixed Galerkin method supports
-only the fourth-order half-line problem described above. The manufactured catalog supplies native descriptions for representable
+damping and continuation. Finite intervals also support the
+[finite mixed Galerkin formulation](finite_galerkin.md) with left u,u''' and
+right u,u' data. Problems with `delta=0` retain the supported collocation
+boundary families. The manufactured catalog supplies native descriptions for representable
 legacy equations; the solver support table below identifies the permitted paths.
 
 Both solution types expose `u(x)`, `w(x)`, `u_dx(x)`, `w_dx(x)`, and `flux(x)`

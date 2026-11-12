@@ -14,6 +14,8 @@ from overscreening_breakdown.collocation.solution import CollocationSolution
 from overscreening_breakdown.galerkin.basis import GalerkinBasis
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.galerkin.solution import GalerkinSolution, _distance_polynomial
+from overscreening_breakdown.galerkin.finite_basis import FiniteGalerkinBasis
+from overscreening_breakdown.galerkin.finite_solution import FiniteGalerkinSolution
 
 
 def _finite(arithmetic, value, name):
@@ -111,13 +113,78 @@ class _CorrectedProfile:
                      for value in (u, -u_xx, u_x, -u_xxx))
 
 
+def _project_finite(source, *, N, quadrature_order, subdivisions, trace_tolerance):
+    """Independent H1 projections with only essential endpoint corrections."""
+    arithmetic, physical = source.arithmetic, source.physical
+    left, right = physical.boundary_conditions
+    if (physical.delta <= 0 or not physical.epsilon.is_identity
+            or left[0] is None or left[3] is None
+            or any(left[k] is not None for k in (1, 2, 4))
+            or right[0] is None or right[1] is None
+            or any(right[k] is not None for k in (2, 3, 4))):
+        raise ValueError("finite projection requires delta>0, epsilon=1, left u,u''' and right u,u'")
+    start, end = physical.domain
+    length = end-start
+    defects = (source.u(start)-left[0], source.u(end)-right[0])
+    if trace_tolerance is None:
+        eps = arithmetic.context.eps if arithmetic.use_mpmath else arithmetic.scalar(np.finfo(float).eps)
+        scale = max(arithmetic.scalar(1), abs(left[0]), abs(right[0]),
+                    _sum(arithmetic, (abs(value) for value in source.coefficients)))
+        trace_tolerance = 100*eps*scale
+    trace_tolerance = _finite(arithmetic, trace_tolerance, "trace tolerance")
+    if trace_tolerance < 0 or any(abs(value) > trace_tolerance for value in defects):
+        raise ValueError("source endpoint defects exceed the trace tolerance")
+    basis = FiniteGalerkinBasis(len(source.coefficients)+1 if N is None else N,
+                                arithmetic, domain=physical.domain)
+    if quadrature_order is None:
+        quadrature_order = max(basis.N+1, (len(source.coefficients)+basis.N+4)//2)
+    plan = QuadratureFactory(arithmetic, domain=physical.domain).plan(
+        quadrature_order, subdivisions=subdivisions)
+    if plan.order < basis.N+1:
+        raise ValueError("projection requires quadrature order >= N+1 per panel")
+    table = basis.tabulate(plan)
+    lift = basis.lift(left[0], right[0])
+    values = []
+    for x, y in zip(plan.physical_nodes, plan.nodes):
+        t = (x-start)/length
+        correction = defects[0]*(1-t)+defects[1]*t
+        correction_dx = (defects[1]-defects[0])/length
+        values.append((source.u(x)-correction-lift.value(y),
+                       source.u_dx(x)-correction_dx-lift.dx(y),
+                       source.w(x), source.w_dx(x)))
+
+    def project(rows, derivatives, value_index, derivative_index):
+        size = len(rows[0])
+        gram = arithmetic.matrix(tuple(tuple(_sum(arithmetic, (
+            weight*(row[i]*row[j]+derivative[i]*derivative[j])
+            for weight, row, derivative in zip(plan.physical_weights, rows, derivatives)))
+            for j in range(size)) for i in range(size)))
+        load = arithmetic.vector(tuple(_sum(arithmetic, (
+            weight*(value[value_index]*row[i]+value[derivative_index]*derivative[i])
+            for weight, value, row, derivative in zip(plan.physical_weights, values, rows, derivatives)))
+            for i in range(size)))
+        return tuple(_finite(arithmetic, value, "projected coefficient")
+                     for value in arithmetic.solve(gram, load))
+
+    coefficients = project(table.v, table.v_dx, 0, 1)+project(table.q, table.q_dx, 2, 3)
+    info = (("source_solver", source.solver_type), ("source_N", source.N),
+            ("source_domain", source.domain), ("norm", "physical_h1"),
+            ("left_adjustment", -defects[0]), ("right_adjustment", -defects[1]),
+            ("trace_tolerance", trace_tolerance), ("quadrature_order", plan.order),
+            ("subdivisions", plan.subdivisions))
+    return FiniteGalerkinSolution(basis, physical, coefficients, plan=plan,
+                                  method="projection", projection_info=info)
+
+
 def project_collocation(source, *, N=None, L=None, arithmetic=None,
                         quadrature_order=None, subdivisions=1,
                         trace_tolerance=None):
     """Project collocation u and -u'' independently in physical H1(dx).
 
-    Only a half-line ``CollocationSolution`` for epsilon identically one,
-    delta>0, and prescribed u(0),u'''(0) is accepted. No reverse conversion or
+    Accept a ``CollocationSolution`` for epsilon identically one, delta>0,
+    and Galerkin-compatible boundary data, on a half-line or finite interval.
+    Finite intervals require left u,u''' and right u,u'; their geometry comes
+    from the source domain, so an explicit L is rejected. No reverse conversion or
     automatic solver conversion is provided. The target retains the same
     bound physical problem and arithmetic owner; a foreign owner is rejected.
 
@@ -141,7 +208,10 @@ def project_collocation(source, *, N=None, L=None, arithmetic=None,
     arithmetic = source.arithmetic
     physical = source.physical
     if physical.domain != (arithmetic.scalar(0), arithmetic.inf):
-        raise ValueError("collocation-to-Galerkin projection supports the half-line only")
+        if L is not None:
+            raise ValueError("L is a half-line mapping parameter; finite projection uses the source domain")
+        return _project_finite(source, N=N, quadrature_order=quadrature_order,
+                               subdivisions=subdivisions, trace_tolerance=trace_tolerance)
     if physical.delta <= 0 or not physical.epsilon.is_identity:
         raise ValueError("projection requires delta>0 and epsilon identically one")
     left, right = physical.boundary_conditions

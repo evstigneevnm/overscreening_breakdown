@@ -11,6 +11,7 @@ from overscreening_breakdown.continuation import solve_continuation
 from overscreening_breakdown.collocation.adapter import CollocationProblemAdapter, prepare_collocation_problem
 from overscreening_breakdown.arithmetic import NumpyArithmetic, MpmathArithmetic
 from overscreening_breakdown.rational_mapping import RationalHalfLineMap
+from overscreening_breakdown.affine_mapping import AffineIntervalMap
 from overscreening_breakdown.initialization import initialize_fsolve, validate_initializer
 from overscreening_breakdown.collocation.globalization import CollocationMeritGeometry
 from overscreening_breakdown.scipy_solver import verify_scipy_result
@@ -41,6 +42,8 @@ class basis_functions(object):
         self.__tan = np.vectorize(self.__mp.tan)
         self.__half_line_key = None
         self.__half_line_mapping = None
+        self.__interval_key = None
+        self.__interval_mapping = None
 
     #axilary functions
 
@@ -151,30 +154,48 @@ class basis_functions(object):
         """Map physical scalars or arrays to angles, with the wall at pi."""
         return self.__map_half_line("to_angle", x)
 
-    def from_segment_map_to_t(self, x_in): #not good, but have to do it due to mpmath
-        x0 = self._calc_domain[0]
-        x1 = self._calc_domain[1]
-        idx0 = x_in < x0
-        idx1 = x_in > x1
-        for jl, fl in enumerate(idx0):
-            if fl:
-                x_in[jl] = x0
-        for jl, fl in enumerate(idx1):
-            if fl:
-                x_in[jl] = x1
+    def __interval_map(self):
+        bits = self.__mp.mp.prec if self.__use_mpmath else 53
+        domain = tuple(self._calc_domain)
+        key = (self.__use_mpmath, domain, bits)
+        if key != self.__interval_key:
+            if self.__use_mpmath:
+                arithmetic = MpmathArithmetic(self.__mp.mp.dps)
+                arithmetic.context.prec = bits
+            else:
+                arithmetic = NumpyArithmetic()
+            self.__interval_mapping = AffineIntervalMap(arithmetic, domain)
+            self.__interval_key = key
+        return self.__interval_mapping
 
-        t = self.__acos((2*x_in-(x1 + x0))/(x1 - x0))
-        return t    
+    def __map_interval(self, method_name, values):
+        mapping = self.__interval_map()
+        method = getattr(mapping, method_name)
+        inputs = np.asarray(values, dtype=object)
+        output = np.empty(inputs.shape, dtype=object if self.__use_mpmath else np.float64)
+        for index in np.ndindex(inputs.shape):
+            value = inputs[index]
+            if method_name == "to_angle":
+                native = mapping.arithmetic.scalar(value)
+                if native < mapping.left or native > mapping.right:
+                    value = mapping.left if native < mapping.left else mapping.right
+                    # Preserve the historical finite collocation clipping of
+                    # supplied arrays. The shared scalar map never mutates.
+                    if isinstance(values, np.ndarray):
+                        values[index] = self.__mp.mpf(value) if self.__use_mpmath else value
+            result = method(value)
+            output[index] = self.__mp.mpf(result) if self.__use_mpmath else result
+        return output
+
+    def from_segment_map_to_t(self, x_in):
+        return self.__map_interval("to_angle", x_in)
 
     def from_t_map_to_infinity(self, t):
         """Map angles to physical coordinates, preserving array shape."""
         return self.__map_half_line("from_angle", t)
 
     def from_t_map_to_segment(self, t):
-        x0 = self._calc_domain[0]
-        x1 = self._calc_domain[1]
-        x = (self.__cos(t)*(x1-x0)+(x1+x0))/2
-        return x
+        return self.__map_interval("from_angle", t)
 
     def map_derivative1_inf(self, l, t):
         return -self.__sin(t/2)**2*self.__tan(t/2)*self.dpsi(l, t)/self.__L

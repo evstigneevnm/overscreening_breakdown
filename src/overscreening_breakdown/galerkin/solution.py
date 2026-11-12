@@ -85,7 +85,7 @@ def _physical_squared_norm(functions, plan):
 
 
 def physical_l2_norm(function, plan):
-    """Approximate ``sqrt(integral |function(x)|**2 dx)`` on the half-line."""
+    """Approximate ``sqrt(integral |function(x)|**2 dx)`` on the plan's domain."""
     squared = _physical_squared_norm((function,), plan)
     return plan.arithmetic.sqrt(squared)
 
@@ -315,7 +315,9 @@ class GalerkinSolution:
     def _check_field_plan(self, plan):
         self.check_precision()
         _check_norm_plan(plan)
-        if plan.arithmetic is not self.arithmetic or plan.mapping.L != self.L:
+        if (plan.arithmetic is not self.arithmetic
+                or not isinstance(plan.mapping, type(self.basis.mapping))
+                or plan.mapping.L != self.L):
             raise ValueError("field diagnostics require the same arithmetic owner and mapping length")
         boundaries = {endpoint for panel in plan.panels for endpoint in panel}
         if any(self.basis.mapping.to_reference(point) not in boundaries

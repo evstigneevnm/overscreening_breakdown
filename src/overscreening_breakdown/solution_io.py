@@ -32,6 +32,12 @@ from overscreening_breakdown.quadrature import QuadratureFactory
 FORMAT = "overscreening_solution"
 FORMAT_VERSION = 2
 BASIS_IDS = {"collocation": "cosine_tau", "galerkin": "rational_chebyshev_mixed"}
+FINITE_BASIS_ID = "affine_chebyshev_petrov_mixed"
+
+
+def _finite_galerkin(solution):
+    return (solution.solver_type == "galerkin"
+            and getattr(solution.basis.mapping, "mapping_type", None) == "affine_interval")
 
 
 def _keys(value, required, name):
@@ -199,10 +205,10 @@ def _sample_coordinates(solution):
     if solution.solver_type == "galerkin":
         plan = solution.plan
         if plan is None:
-            plan = QuadratureFactory(
-                solution.arithmetic, L=solution.L,
-                interfaces=solution.physical.epsilon.interfaces,
-            ).plan(solution.N+1)
+            geometry = ({"domain": solution.basis.mapping.raw_domain} if _finite_galerkin(solution)
+                        else {"L": solution.L})
+            plan = QuadratureFactory(solution.arithmetic, interfaces=solution.physical.epsilon.interfaces,
+                                     **geometry).plan(solution.N+1)
         return plan.physical_nodes
     left, right = solution.physical.domain
     return (left, solution.L) if not solution.arithmetic.isfinite(right) else (left, right/2, right)
@@ -241,11 +247,17 @@ def save_solution(solution, path):
     samples = [{"x": _number(x), "value": _number(physical.epsilon(x))}
                for x in _sample_coordinates(solution)]
     nonlinear = getattr(solution, "nonlinear_converged", solution.converged)
+    finite = _finite_galerkin(solution)
+    geometry = ({"mapping_type": "affine_interval",
+                 "raw_domain": [_number(value) for value in solution.basis.mapping.raw_domain],
+                 "domain": [_number(value) for value in physical.domain]} if finite else
+                {"L": _number(solution.L), "raw_L": _number(_raw_length(solution)),
+                 "domain": [_number(value) for value in physical.domain]})
     record = {
         "format": FORMAT,
         "format_version": FORMAT_VERSION,
         "solver_type": solver,
-        "basis": {"id": BASIS_IDS[solver], "version": 1, "N": int(solution.N),
+        "basis": {"id": FINITE_BASIS_ID if finite else BASIS_IDS[solver], "version": 1, "N": int(solution.N),
                   "unknown_count": int(solution.unknown_count)},
         "arithmetic": {
             "backend": "mpmath" if arithmetic.use_mpmath else "numpy",
@@ -253,8 +265,7 @@ def save_solution(solution, path):
             "precision_bits": arithmetic.context.prec if arithmetic.use_mpmath else 53,
             "precision_dps": int(arithmetic.dps),
         },
-        "geometry": {"L": _number(solution.L), "raw_L": _number(_raw_length(solution)),
-                     "domain": [_number(value) for value in physical.domain]},
+        "geometry": geometry,
         "physical": _physical_metadata(physical),
         "epsilon_samples": samples,
         "callback_verification": "coefficient_samples_only",
@@ -315,10 +326,11 @@ def _saved_arithmetic(record):
     return arithmetic
 
 
-def _decode_sequence(values, arithmetic, name, allow_infinity=False):
+def _decode_sequence(values, arithmetic, name, allow_infinity=False, raw=False):
     if not isinstance(values, list):
         raise ValueError("{} must be a numerical list".format(name))
-    return tuple(_decode_number(value, arithmetic, allow_infinity=allow_infinity) for value in values)
+    return tuple(_decode_number(value, arithmetic, allow_infinity=allow_infinity, raw=raw)
+                 for value in values)
 
 
 def _check_physical(record, physical, arithmetic):
@@ -360,9 +372,10 @@ def _restore_plan(record, basis):
     if not isinstance(interfaces, list):
         raise ValueError("quadrature raw interfaces must be a list")
     raw_interfaces = tuple(_decode_number(value, basis.arithmetic, raw=True) for value in interfaces)
-    plan = QuadratureFactory(
-        basis.arithmetic, L=basis.mapping.raw_L, interfaces=raw_interfaces,
-    ).plan(order, subdivisions)
+    geometry = ({"domain": basis.mapping.raw_domain}
+                if getattr(basis.mapping, "mapping_type", None) == "affine_interval"
+                else {"L": basis.mapping.raw_L})
+    plan = QuadratureFactory(basis.arithmetic, interfaces=raw_interfaces, **geometry).plan(order, subdivisions)
     panels = record["panels"]
     if not isinstance(panels, list):
         raise ValueError("invalid saved quadrature panels")
@@ -415,34 +428,47 @@ def load_solution(path, *, problem, solver=None, use_mpmath=None, precision=None
         raise TypeError("supply the original unbound physical problem description")
     source = _saved_arithmetic(record["arithmetic"])
     physical = problem.bind(source)
+    basis_record = record["basis"]
+    _keys(basis_record, ("id", "version", "N", "unknown_count"), "basis")
+    supported_bases = ((BASIS_IDS[saved_solver], FINITE_BASIS_ID) if saved_solver == "galerkin"
+                       else (BASIS_IDS[saved_solver],))
+    if (basis_record["id"] not in supported_bases
+            or type(basis_record["version"]) is not int or basis_record["version"] != 1):
+        raise ValueError("saved basis does not match its solver type")
+    finite = saved_solver == "galerkin" and basis_record["id"] == FINITE_BASIS_ID
     geometry = record["geometry"]
-    _keys(geometry, ("L", "raw_L", "domain"), "geometry")
-    length = _decode_number(geometry["L"], source)
-    raw_length = _decode_number(geometry["raw_L"], source, raw=True)
-    if length <= 0 or source.scalar(raw_length) != length:
-        raise ValueError("saved mapping length is invalid or inconsistent")
+    if finite:
+        _keys(geometry, ("mapping_type", "raw_domain", "domain"), "finite geometry")
+        if geometry["mapping_type"] != "affine_interval":
+            raise ValueError("finite saved basis requires an affine interval mapping")
+        raw_domain = _decode_sequence(geometry["raw_domain"], source, "raw finite domain", raw=True)
+    else:
+        _keys(geometry, ("L", "raw_L", "domain"), "geometry")
+        length = _decode_number(geometry["L"], source)
+        raw_length = _decode_number(geometry["raw_L"], source, raw=True)
+        if length <= 0 or source.scalar(raw_length) != length:
+            raise ValueError("saved mapping length is invalid or inconsistent")
     domain = _decode_sequence(geometry["domain"], source, "domain", allow_infinity=True)
     if len(domain) != 2 or domain != physical.domain:
         raise ValueError("saved domain does not match the supplied problem")
+    if finite and (len(raw_domain) != 2 or any(not source.isfinite(value) for value in domain)
+                   or tuple(source.scalar(value) for value in raw_domain) != domain
+                   or domain[0] != 0 or domain[1] <= domain[0]):
+        raise ValueError("saved finite domain is invalid or inconsistent")
     _check_physical(record["physical"], physical, source)
     if record["callback_verification"] != "coefficient_samples_only":
         raise ValueError("unsupported callback verification metadata")
-    basis_record = record["basis"]
-    _keys(basis_record, ("id", "version", "N", "unknown_count"), "basis")
-    if (basis_record["id"] != BASIS_IDS[saved_solver]
-            or type(basis_record["version"]) is not int or basis_record["version"] != 1):
-        raise ValueError("saved basis does not match its solver type")
     N = _integer(basis_record["N"], "basis N", 2 if saved_solver == "galerkin" else 1)
     unknowns = _integer(basis_record["unknown_count"], "unknown count", 1)
     fields = record["coefficients"]
     _keys(fields, ("u", "w") if saved_solver == "galerkin" else ("u",), "coefficient fields")
     u = _decode_sequence(fields["u"], source, "u coefficients")
     w = _decode_sequence(fields["w"], source, "w coefficients") if saved_solver == "galerkin" else ()
-    expected = 2*N-1 if saved_solver == "galerkin" else N+sum(
+    expected = (2*N if finite else 2*N-1) if saved_solver == "galerkin" else N+sum(
         value is not None for row in physical.boundary_conditions for value in row
     )
     if (unknowns != expected or len(u)+len(w) != unknowns
-            or (saved_solver == "galerkin" and (len(u) != N-1 or len(w) != N))):
+            or (saved_solver == "galerkin" and (len(u) != N-1 or len(w) != N+int(finite)))):
         raise ValueError("coefficient counts disagree with the saved discretization")
     expected_kind = "mpf" if source.use_mpmath else "float64"
     for value in fields["u"] + (fields["w"] if saved_solver == "galerkin" else []):
@@ -474,10 +500,18 @@ def load_solution(path, *, problem, solver=None, use_mpmath=None, precision=None
     if saved_solver == "collocation" and projection_info:
         raise ValueError("collocation snapshots cannot contain mixed projection metadata")
     if saved_solver == "galerkin":
-        basis = GalerkinBasis(N, source, L=raw_length)
+        if finite:
+            from overscreening_breakdown.galerkin.finite_basis import FiniteGalerkinBasis
+            from overscreening_breakdown.galerkin.finite_solution import FiniteGalerkinSolution
+            basis_type, solution_type = FiniteGalerkinBasis, FiniteGalerkinSolution
+            basis_options = {"domain": raw_domain}
+        else:
+            from overscreening_breakdown.galerkin.solution import GalerkinSolution
+            basis_type, solution_type = GalerkinBasis, GalerkinSolution
+            basis_options = {"L": raw_length}
+        basis = basis_type(N, source, **basis_options)
         plan = _restore_plan(record["quadrature"], basis)
-        from overscreening_breakdown.galerkin.solution import GalerkinSolution
-        source_solution = GalerkinSolution(
+        source_solution = solution_type(
             basis=basis, physical=physical, coefficients=source.vector(u+w), plan=plan,
             method=status["method"], converged=status["converged"],
             nonlinear_converged=status["nonlinear_converged"],
@@ -515,17 +549,17 @@ def load_solution(path, *, problem, solver=None, use_mpmath=None, precision=None
     target_physical = problem.bind(target)
     coefficients = target.vector(u+w)
     if saved_solver == "galerkin":
-        target_basis = GalerkinBasis(N, target, L=raw_length)
+        target_basis = basis_type(N, target, **basis_options)
         # A changed arithmetic reconstructs the rule from raw geometry instead
         # of requiring its newly rounded panels to equal the saved panels.
         target_plan = None
         if record["quadrature"] is not None:
             quad = record["quadrature"]
             interfaces = tuple(_decode_number(value, target, raw=True) for value in quad["raw_interfaces"])
-            target_plan = QuadratureFactory(target, L=raw_length, interfaces=interfaces).plan(
+            target_plan = QuadratureFactory(target, interfaces=interfaces, **basis_options).plan(
                 quad["order"], quad["subdivisions"]
             )
-        return GalerkinSolution(
+        return solution_type(
             basis=target_basis, physical=target_physical, coefficients=coefficients, plan=target_plan,
             method=status["method"], converged=converged,
             nonlinear_converged=nonlinear_converged,

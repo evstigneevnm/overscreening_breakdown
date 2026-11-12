@@ -15,6 +15,9 @@ from overscreening_breakdown.continuation import ContinuationOptions, solve_cont
 from overscreening_breakdown.problems.flux import BoundFluxProblem
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.galerkin.solution import GalerkinSolution
+from overscreening_breakdown.galerkin.finite_basis import FiniteGalerkinBasis
+from overscreening_breakdown.galerkin.finite_assembly import FiniteGalerkinAssembly
+from overscreening_breakdown.galerkin.finite_solution import FiniteGalerkinSolution
 from overscreening_breakdown.initialization import validate_initializer
 from overscreening_breakdown.diagnostics import ProgressReporter
 
@@ -56,13 +59,13 @@ def _compatible_restart(source, physical, N, L, solver_type):
     old_bits = old.context.prec if old.use_mpmath else 53
     new_bits = new.context.prec if new.use_mpmath else 53
     scalar = (old if old_bits <= new_bits else new).scalar
-    if scalar(source.L) != scalar(L):
-        raise ValueError("restart mapping length must match the target basis")
     for values, targets in ((source.domain, physical.domain),
                             ((source.physical.delta,), (physical.delta,)),
                             (source.physical.epsilon.interfaces, physical.epsilon.interfaces)):
         if len(values) != len(targets) or any(scalar(a) != scalar(b) for a, b in zip(values, targets)):
             raise ValueError("restart physical geometry or parameters are incompatible")
+    if physical.domain[1] == new.inf and scalar(source.L) != scalar(L):
+        raise ValueError("restart mapping length must match the target basis")
     for old_row, new_row in zip(source.physical.boundary_conditions, physical.boundary_conditions):
         if any((a is None) != (b is None) or
                (a is not None and scalar(a) != scalar(b)) for a, b in zip(old_row, new_row)):
@@ -70,14 +73,19 @@ def _compatible_restart(source, physical, N, L, solver_type):
     for name in ("lower_bound", "upper_bound", "wall_value"):
         if scalar(getattr(source.physical.epsilon, name)) != scalar(getattr(physical.epsilon, name)):
             raise ValueError("restart epsilon metadata are incompatible")
-    for point in (new.scalar(L), 2*new.scalar(L)):
+    if physical.domain[1] == new.inf:
+        points = (new.scalar(L), 2*new.scalar(L))
+    else:
+        boundaries = (physical.domain[0],)+physical.epsilon.interfaces+(physical.domain[1],)
+        points = tuple((left+right)/2 for left, right in zip(boundaries[:-1], boundaries[1:]))
+    for point in points:
         if point not in physical.epsilon.interfaces:
             if scalar(source.physical.epsilon(old.scalar(point))) != scalar(physical.epsilon(point)):
                 raise ValueError("restart epsilon samples are incompatible")
 
 
 def _initial_coefficients(initial, physical, N, L, solver_type):
-    if isinstance(initial, (GalerkinSolution, CollocationSolution)):
+    if isinstance(initial, (GalerkinSolution, FiniteGalerkinSolution, CollocationSolution)):
         _compatible_restart(initial, physical, N, L, solver_type)
         return physical.arithmetic.vector(initial.coefficients)
     return initial
@@ -143,7 +151,9 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
     """Solve an unbound physical problem and return an evaluable solution.
 
     Collocation supports epsilon=1 and its existing method/boundary families.
-    Galerkin supports the fourth-order half-line split formulation and Newton.
+    Galerkin supports fourth-order split formulations on [0,infinity) and
+    [0,R], using Newton. Finite domains prescribe left u,u''' and right u,u'.
+    Their geometry comes from problem.domain; L is a half-line parameter.
     Its ``converged`` flag requires both final-q=0 Newton convergence and an
     independent fixed-state residual/Jacobian quadrature comparison.
     SciPy collocation methods expose ``scipy_result`` stop diagnostics and
@@ -263,8 +273,15 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
                   initializer=initializer, newton_fallback=newton_fallback)
     with progress.phase("problem_binding"):
         physical = _bind(problem, arithmetic)
-    unknowns = 2*int(N)-1 if solver == "galerkin" else int(N)+sum(
-        value is not None for row in physical.boundary_conditions for value in row)
+    finite = physical.domain[1] != arithmetic.inf
+    raw_domain = getattr(problem, "domain", physical.domain)
+    if solver == "galerkin":
+        with progress.phase("basis"):
+            basis = (FiniteGalerkinBasis(int(N), arithmetic, domain=raw_domain) if finite else
+                     GalerkinBasis(int(N), arithmetic, L))
+        unknowns = basis.unknown_count
+    else:
+        unknowns = int(N)+sum(value is not None for row in physical.boundary_conditions for value in row)
     progress.emit("problem_ready", unknown_count=unknowns,
                   norm="rms" if solver == "collocation" else "euclidean")
     if isinstance(initial_guess, (str, Path)):
@@ -323,14 +340,14 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
             or max_refinements < 0):
         raise ValueError("max_refinements must be a nonnegative integer")
     progress = progress.bind(norm="euclidean")
-    with progress.phase("basis"):
-        basis = GalerkinBasis(int(N), arithmetic, L)
     order = 2*int(N) if quadrature_order is None else quadrature_order
     raw_interfaces = getattr(getattr(problem, "epsilon", None), "interfaces", physical.epsilon.interfaces)
     with progress.phase("quadrature", order=order, subdivisions=subdivisions):
-        plan = QuadratureFactory(arithmetic, L=L, interfaces=raw_interfaces).plan(order, subdivisions)
+        plan = QuadratureFactory(arithmetic, L=L, interfaces=raw_interfaces,
+                                 domain=raw_domain if finite else None).plan(order, subdivisions)
     # Bind once: all refinement systems must retain this exact snapshot.
-    assembly = GalerkinAssembly._from_snapshot(physical, basis, plan, progress=progress)
+    assembly_type = FiniteGalerkinAssembly if finite else GalerkinAssembly
+    assembly = assembly_type._from_snapshot(physical, basis, plan, progress=progress)
     if callable(initial_guess):
         with progress.phase("initial_projection"):
             initial_guess = _project_initial_u(assembly, initial_guess)
@@ -388,7 +405,8 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
             break
         initial_guess = result.state.copy()
         assembly = check.refined_assembly
-    return GalerkinSolution(
+    solution_type = FiniteGalerkinSolution if finite else GalerkinSolution
+    return solution_type(
         basis=basis, physical=physical, coefficients=result.state, plan=assembly.plan,
         converged=bool(result.converged and checked), nonlinear_converged=result.converged,
         quadrature_converged=checked, newton_result=result, quadrature_history=tuple(history),

@@ -73,7 +73,9 @@ def plot_coefficients(solution, *, ax=None):
     """Return separate Galerkin coefficient panels, or one collocation panel."""
     solution.check_precision()
     if solution.solver_type == "galerkin":
-        fields = ((r"$u-\ell_L$ coefficients", solution.u_coefficients),
+        lift = (r"$u-\ell$ coefficients" if getattr(solution.basis.mapping, "mapping_type", None) == "affine_interval"
+                else r"$u-\ell_L$ coefficients")
+        fields = ((lift, solution.u_coefficients),
                   (r"$w$ coefficients", solution.w_coefficients))
     elif solution.solver_type == "collocation":
         fields = ((r"$u$ coefficients", solution.coefficients),)

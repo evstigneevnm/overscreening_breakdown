@@ -202,7 +202,7 @@ class GalerkinProjectionTests(unittest.TestCase):
         problems = (
             self.problem(delta=0, boundaries=((1, None, None, None, None), (None,)*5)),
             self.problem(domain=(0, 2), boundaries=((1, None, None, -6, None),
-                                                  (0, 0, None, None, None))),
+                                                  (0, None, 0, None, None))),
             self.problem(boundaries=((1, -1, None, None, None), (None,)*5)),
         )
         for problem in problems:

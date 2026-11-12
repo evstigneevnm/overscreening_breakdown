@@ -35,7 +35,8 @@ zero, and domain `[0,infinity)`. The Gaussian and physical-source normalization
 remain the model's existing ones.
 
 There is no separate public segment BSK class. Supply the finite domain and
-boundary conditions explicitly; only collocation supports this domain:
+boundary conditions explicitly. Second-order (`delta=0`) problems use
+collocation:
 
 ```python
 finite_problem = BSKProblem(
@@ -45,6 +46,11 @@ finite_problem = BSKProblem(
 )
 finite_solution = solve(finite_problem, 8, solver="collocation")
 ```
+
+For `delta>0`, finite Galerkin supports left u,u''' and right u,u' data,
+including discontinuous epsilon. The same `solve(..., solver="galerkin")`
+call selects the finite basis from `problem.domain`, with `2*N` unknowns.
+See the [finite-interval guide](finite_galerkin.md).
 
 Use `FluxProblem(delta=..., f=..., f_u=..., ...)` for a different physical
 source. Its callbacks take `(x, u, arithmetic)` and return unscaled physical

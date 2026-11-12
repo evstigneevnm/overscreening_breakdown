@@ -21,6 +21,16 @@ class RationalHalfLineMap:
     L: Any
     raw_L: Any = field(repr=False)
     precision_signature: tuple
+    mapping_type = "rational_half_line"
+
+    @property
+    def domain(self):
+        self.check_precision()
+        return (self.arithmetic.scalar(0), self.arithmetic.scalar(self.arithmetic.inf))
+
+    @property
+    def raw_domain(self):
+        return (0, "inf")
 
     def __init__(self, arithmetic, L=1):
         length = arithmetic.scalar(L)

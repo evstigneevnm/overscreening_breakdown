@@ -88,7 +88,7 @@ mixed = solve(
 
 This projects the corrected collocation field and its negative second
 derivative independently in physical H1. It retains the source's arithmetic
-owner and physical problem. The source must satisfy the mixed half-line,
+owner and physical problem. The source must satisfy the selected mixed,
 epsilon-one, delta-positive boundary requirements. Tiny wall/far-field defects
 are explicitly corrected before integration and recorded in `projection_info`;
 defects above the trace tolerance are rejected. A projected restart has all
@@ -99,6 +99,18 @@ are rational and its fixed rule requires a separate integration assessment;
 The default trace tolerance is scaled machine roundoff; the explicit threshold
 in the example permits the stated normalization at the collocation solve's
 tolerance and records the applied corrections.
+
+Finite Galerkin snapshots have a distinct `affine_chebyshev_petrov_mixed`
+basis identifier, affine geometry with raw interval endpoints, and `2*N`
+coefficients split into `N-1` potential and `N+1` auxiliary coefficients.
+Existing version-2 half-line and finite-collocation records retain their
+interpretation. Loading rejects an incompatible basis, interval, or solver.
+
+For a compatible finite collocation source, use
+`project_collocation(collocation, N=...)` without `L`. Both endpoint value
+defects are corrected through a linear function before projection. Finite
+Galerkin requires left value/third derivative and right value/slope; it leaves
+the right auxiliary-field value free. See the [finite-interval guide](finite_galerkin.md).
 
 Run the common-interface [example](../examples/restart_and_projection.py) from the
 repository root:

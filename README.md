@@ -1,7 +1,7 @@
 # Overscreening breakdown
 
 Collocation and mixed Galerkin solvers for overscreening and generalized
-half-line flux equations,
+flux equations on a half-line or finite interval,
 
 \[
 \left(\epsilon(x)\bigl(u'(x)-\delta^2u'''(x)\bigr)\right)'=f(x,u(x)).
@@ -56,6 +56,11 @@ Galerkin returns independent fields `u` and `w`; collocation derives `w=-u''`.
 `N` has different meanings for the discretizations, so compare actual unknown
 counts and attained accuracy. Galerkin's overall convergence requires both
 Newton and quadrature checks.
+
+Finite Galerkin uses `problem.domain=(0, R)`, with left value/third-derivative
+and right value/slope boundary data. It supports variable and discontinuous
+epsilon and stores `2*N` unknowns. See the [finite-interval guide](docs/finite_galerkin.md)
+for the spaces, boundary conventions, and restart rules.
 
 NumPy collocation can refine its starting guess with `initializer="fsolve"`.
 Both solvers can enable native adjoint recovery with `newton_fallback="adjoint"`,

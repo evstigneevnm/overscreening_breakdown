@@ -1,6 +1,7 @@
-"""Positive, fixed composite Gauss--Legendre rules for the physical half-line.
+"""Positive, fixed composite Gauss--Legendre rules for physical intervals.
 
-Each plan uses ``x = L (1 + y) / (1 - y)`` and splits at every declared
+Half-line plans use ``x = L (1 + y) / (1 - y)``; finite plans use an affine
+map of their declared domain. Each plan splits at every declared
 physical interface before placing any nodes.  The rules are independent of a
 discretization or nonlinear solve.  NumPy uses float64 Legendre rules; mpmath
 constructs its rules entirely in the owner's cloned context, without float64
@@ -21,6 +22,7 @@ from typing import Any, Tuple
 import numpy as np
 
 from overscreening_breakdown.rational_mapping import RationalHalfLineMap, arithmetic_signature
+from overscreening_breakdown.affine_mapping import AffineIntervalMap
 
 
 def _positive_integer(value, name):
@@ -77,6 +79,10 @@ class QuadraturePlan:
         return self.mapping.precision_signature
 
     @property
+    def domain(self):
+        return self.mapping.domain
+
+    @property
     def raw_interfaces(self):
         """Original physical split inputs, including extra integration splits."""
         self.check_precision()
@@ -104,7 +110,7 @@ class QuadraturePlan:
         return _finite_scalar(arithmetic, value, "quadrature sum")
 
     def integrate(self, callback):
-        """Approximate ``integral_0^infinity callback(x) dx`` with scalar calls."""
+        """Approximate the physical-domain integral with scalar calls."""
         return self._integrate(callback, self.physical_nodes, self.physical_weights)
 
     def integrate_reference(self, callback):
@@ -157,16 +163,27 @@ class QuadraturePlan:
 class QuadratureFactory:
     """Build and locally cache rules for one arithmetic and raw geometry.
 
-    ``interfaces`` contains positive, finite physical coordinates in strictly
-    increasing order.  Use decimal strings to retain geometry beyond float64.
+    ``domain=None`` retains the half-line default. A finite ``domain=(a,b)``
+    selects an affine map; L then has no geometric role. Interfaces must lie
+    strictly inside the domain, in increasing order. Use decimal strings to
+    retain geometry beyond float64.
     Already-rounded mpmath inputs cannot recover discarded digits when a
     context's precision is raised.  No cache is shared across arithmetic owners.
     """
 
-    def __init__(self, arithmetic, L=1, interfaces=(), max_cached_plans=32):
+    def __init__(self, arithmetic, L=1, interfaces=(), max_cached_plans=32, *, domain=None):
         self._arithmetic = arithmetic
         self._raw_L = L
         self._raw_interfaces = tuple(interfaces)
+        if domain is None:
+            self._raw_domain = None
+        else:
+            try:
+                self._raw_domain = tuple(domain)
+            except TypeError as error:
+                raise ValueError("quadrature domain must contain two endpoints") from error
+            if len(self._raw_domain) != 2:
+                raise ValueError("quadrature domain must contain two endpoints")
         self._max_cached_plans = _positive_integer(
             max_cached_plans, "max_cached_plans"
         )
@@ -187,20 +204,31 @@ class QuadratureFactory:
         """Immutable original physical interface inputs retained for rebuilding."""
         return self._raw_interfaces
 
+    @property
+    def raw_domain(self):
+        return (0, "inf") if self._raw_domain is None else self._raw_domain
+
     def _refresh_geometry(self):
         signature = arithmetic_signature(self.arithmetic)
         if signature == self._signature:
             return
-        mapping = RationalHalfLineMap(self.arithmetic, self._raw_L)
         arithmetic = self.arithmetic
+        if self._raw_domain is None:
+            mapping = RationalHalfLineMap(arithmetic, self._raw_L)
+        else:
+            left, right = (arithmetic.scalar(value) for value in self._raw_domain)
+            mapping = (RationalHalfLineMap(arithmetic, self._raw_L)
+                       if left == 0 and right == arithmetic.inf
+                       else AffineIntervalMap(arithmetic, self._raw_domain))
+        physical_left, physical_right = mapping.domain
         zero, one = arithmetic.scalar(0), arithmetic.scalar(1)
         boundaries = [-one]
-        physical_boundaries = [zero]
-        previous = zero
+        physical_boundaries = [physical_left]
+        previous = physical_left
         for raw in self._raw_interfaces:
             physical = _finite_scalar(arithmetic, raw, "physical interface")
-            if physical <= previous:
-                raise ValueError("physical interfaces must be positive and strictly increasing")
+            if physical <= previous or physical >= physical_right:
+                raise ValueError("physical interfaces must be strictly increasing and inside the domain")
             mapped = mapping.to_reference(physical)
             if not boundaries[-1] < mapped < one:
                 raise ValueError("mapped interfaces must be distinct and strictly inside (-1, 1)")
@@ -208,7 +236,7 @@ class QuadratureFactory:
             physical_boundaries.append(physical)
             previous = physical
         boundaries.append(one)
-        physical_boundaries.append(arithmetic.scalar(arithmetic.inf))
+        physical_boundaries.append(physical_right)
         self._mapping = mapping
         self._interface_panels = tuple(zip(boundaries[:-1], boundaries[1:]))
         self._physical_panels = tuple(zip(
@@ -288,8 +316,8 @@ class QuadratureFactory:
                     arithmetic, weight * mapping.jacobian(node),
                     "physical quadrature weight",
                 )
-                if weight <= 0 or physical_weight <= 0 or physical_node <= 0:
-                    raise ValueError("quadrature requires positive weights and physical nodes")
+                if weight <= 0 or physical_weight <= 0:
+                    raise ValueError("quadrature requires positive weights")
                 if nodes and (node <= nodes[-1] or physical_node <= physical_nodes[-1]):
                     raise ValueError("quadrature nodes must remain distinct and increasing")
                 nodes.append(node)
