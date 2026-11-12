@@ -153,7 +153,11 @@ class UserExampleTests(unittest.TestCase):
 
     def test_notebooks_have_clean_outputs_canonical_imports_and_no_directory_magic(self):
         notebooks = sorted((ROOT/"examples"/"notebooks").glob("*.ipynb"))
-        self.assertEqual(len(notebooks), 4)
+        self.assertEqual({path.name for path in notebooks}, {
+            "execution_example.ipynb", "execution_example_galerkin_discontinuous.ipynb",
+            "segment_execution_example.ipynb", "test_different_mu.ipynb",
+            "examples_problems_updated_testing.ipynb",
+        })
         self.assertFalse(list((ROOT/"examples").glob("*.ipynb")))
         for path in notebooks:
             notebook = json.loads(path.read_text())
@@ -173,7 +177,12 @@ class UserExampleTests(unittest.TestCase):
                 self.assertNotIn("from spectral1d import", source)
                 self.assertNotIn("from overscreening_breakdown import overscreening_breakdown", source)
                 self.assertIn("overscreening_breakdown", source)
-                if path.name != "examples_problems_updated_testing.ipynb":
+                if path.name == "execution_example_galerkin_discontinuous.ipynb":
+                    self.assertIn("LayeredMaterial", source)
+                    self.assertIn("run_experiment", source)
+                    self.assertIn("report_experiment", source)
+                    self.assertNotIn("verbose=", source)
+                elif path.name != "examples_problems_updated_testing.ipynb":
                     self.assertIn("BSKProblem", source)
                     for internal_name in ("solve_nonlinear_problem", "CollocationProblemAdapter",
                                           "CollocationSolution", "LegacyBSK", "use_adjoint_opimization"):

@@ -27,6 +27,12 @@ for the interpreter. Minimal installs and optional extras are described in the
 assumed. Open the notebooks under [examples/notebooks](examples/notebooks)
 using your existing Jupyter interface.
 
+For layered materials, start with the guided
+[discontinuous Galerkin notebook](examples/notebooks/execution_example_galerkin_discontinuous.ipynb).
+Edit a material table or select 1, 2, 3, 5, 7, or 10 interfaces, then compare
+BSK and known-answer problems. The default run includes plots and exports;
+larger sweeps and precision studies are optional.
+
 The public interface now uses canonical package imports and an immutable
 `BSKProblem`. Old flat imports and lowercase BSK entry points have been removed.
 See the [breaking migration guide](docs/public_api.md) for replacements.

@@ -15,6 +15,8 @@ _EXPORTS = {
     "BoundFluxProblem": (".problems.flux", "BoundFluxProblem"),
     "Coefficient": (".coefficients", "Coefficient"),
     "ConstantCoefficient": (".coefficients", "ConstantCoefficient"),
+    "LayeredMaterial": (".layered", "LayeredMaterial"),
+    "preset_material": (".layered", "preset_material"),
     "NumpyArithmetic": (".arithmetic", "NumpyArithmetic"),
     "MpmathArithmetic": (".arithmetic", "MpmathArithmetic"),
     "QuadratureFactory": (".quadrature", "QuadratureFactory"),

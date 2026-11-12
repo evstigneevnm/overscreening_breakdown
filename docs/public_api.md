@@ -53,6 +53,21 @@ bounds, wall trace and interface positions; `ConstantCoefficient` describes a
 constant. Collocation accepts explicitly constant epsilon one. Variable or
 non-unit epsilon requires the Galerkin solver and its supported boundary data.
 
+For a material table, `LayeredMaterial` supplies the bounds and interfaces:
+
+```python
+from overscreening_breakdown import LayeredMaterial
+
+material = LayeredMaterial((("0", "1"), ("1", "2"), ("3", "1.5")))
+# Pass epsilon=material.coefficient to BSKProblem or FluxProblem.
+```
+
+Each row gives a layer's start position and coefficient value; the final layer
+extends to infinity. `kind="graded"` adds smooth variation inside each layer.
+`preset_material(count)` provides examples with 1, 2, 3, 5, 7, or 10 interfaces.
+The [guided notebook](../examples/notebooks/execution_example_galerkin_discontinuous.ipynb)
+shows tables, arbitrary coefficient callbacks, accuracy checks, and exports.
+
 ## Solve, inspect, and save
 
 Use the common solver's keyword interface:

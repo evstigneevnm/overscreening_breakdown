@@ -59,6 +59,68 @@ Use the module names listed above. The former `flux_problem_collocation`,
 `flux_problem_galerkin`, and `common_solver_example` entry points have been
 removed, together with the flat compatibility import modules.
 
+## Discontinuous Galerkin notebook
+
+[`execution_example_galerkin_discontinuous.ipynb`](notebooks/execution_example_galerkin_discontinuous.ipynb)
+is a guided workflow for layered materials. Its input cell selects a material
+with 1, 2, 3, 5, 7, or 10 interfaces, a BSK or manufactured source, and an
+arithmetic/integration profile. Every solve declares its resolution explicitly:
+`N_selected`, `N_linear`, `N_nonlinear`, and the optional examples' own `N` values.
+Each also declares a required `newton_atol`, the Newton absolute residual
+tolerance. The adjacent quoted decimal settings make each target editable,
+including a separate target for the finer resolution and the preset sweep.
+Galerkin uses `N-1` potential-correction coefficients and `N` auxiliary-field
+coefficients, giving `2*N-1` global unknowns across all layers. A small material
+table can replace the presets with user-specified
+positions and epsilon values. Both constant layers and smooth variation within
+each layer are supported. An advanced section accepts an arbitrary positive,
+bounded coefficient with declared interfaces.
+
+Physical-definition cells visibly construct `BSKProblem` and the two
+manufactured `FluxProblem` objects, including `f`, `f_u`, boundary conditions,
+and initial guesses. Edit those definitions to change the equations.
+`run_defined_problem(problem, ...)` passes the supplied object to the common
+solver; its model label controls reporting. Resolution studies reuse the same
+problem, and the sweep calls the visible definition functions for each material.
+
+With optional sections switched off, **Run All** performs one selected solve
+and two known-answer checks.
+It plots the material, potential, auxiliary field, physical flux, convergence,
+and manufactured errors. Reports distinguish nonlinear convergence, integration
+verification, and spatial resolution. Optional cells enable a two-resolution
+comparison, native mpmath arithmetic, and all 18 material/source combinations.
+The comparison requires an explicit `fine_N`; the sweep uses an editable
+`N_by_interfaces` table. The `standard`, `strict_integration`, and
+`high_precision` profiles never change `N` or `newton_atol`. Galerkin Newton
+uses a Euclidean discrete-residual target with zero relative tolerance; the
+target controls the algebraic solve independently of physical field error.
+Reports and convergence plots show the target, and exports retain it.
+Automatic starting quadrature uses
+`2*N+4` points per panel and retains independent refinement checks. Experiment
+plot titles and exported settings record the actual resolution.
+
+Separate cells after each manufactured check show absolute and
+percentage-relative physical `L2(dx)` errors for `u`, `w`, and flux. Optional
+linear and nonlinear convergence studies use editable `N_values_linear` and
+`N_values_nonlinear` lists with explicit Newton targets. Enable their individual
+switches to compute the tables; both are initially off. The notebook explains
+why interface flux-error peaks can remain large while integrated errors fall.
+
+The optional **adaptive homotopy recovery** section has its own explicit
+material, nonlinear problem, initial guess, resolution, and work limits.
+Set `run_homotopy_demo=True` to compare a short-budget direct solve, reference
+continuation, and a larger-budget direct Newton control. Separate cells show
+the reference and accepted/rejected stages, parameter path, residuals, fields,
+and known-answer errors. This demonstrates recovery from a short stage budget;
+the direct control can also converge, so it does not establish a speed advantage.
+
+By default it saves settings, typed solution JSON, decimal profile CSV, and PDFs
+under `notebook-output/galerkin-discontinuous` in the kernel's working directory.
+Set `OVERSCREENING_OUTPUT_DIR` before starting the kernel to choose another
+location, or set `save_results=False` to disable exports. Rerunning the same
+case replaces its exports. Custom executable coefficient functions must be
+supplied again when reloading a solution.
+
 The four original notebooks are in [`notebooks/`](notebooks/). Their research
 parameters and sweep sizes are retained, and stale outputs are cleared. They
 import the installed package without changing directories. Set

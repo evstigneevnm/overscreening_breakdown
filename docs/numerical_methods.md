@@ -644,6 +644,7 @@ they implement the same binding protocol as `FluxProblem` and are accepted by
 | `rational_case(coefficient="constant")` | Yes | Yes | Explicit epsilon one |
 | `rational_case(coefficient="scaled"/"smooth"/"exponential")` | No | Yes | Nontrivial epsilon |
 | `transmission_case()` | No | Yes | Declared epsilon jump at `x=1` |
+| `layered_transmission_case(material)` | No | Yes | User-defined constant or graded layers with declared jumps |
 | `polynomial_segment_case()` | Yes | No | Finite interval, second order |
 
 `rational_case(..., nonlinear=True)` adds a nonlinear manufactured source with
@@ -655,6 +656,37 @@ fields are exactly representable. The transmission fixture enforces exact
 physical flux continuity in the manufactured reference; a global finite-N
 approximation should be assessed with weak residuals and flux L2 error rather
 than exact pointwise transmission at the jump.
+
+For several interfaces, a material table supplies epsilon values and positions
+without writing a callback:
+
+```python
+from overscreening_breakdown import LayeredMaterial, preset_material
+from overscreening_breakdown.manufactured import layered_transmission_case
+
+material = LayeredMaterial((("0", "1"), ("1", "2"), ("3", "1.5")))
+case = layered_transmission_case(material, nonlinear=True, delta="2")
+solution = solve(case.make_problem(), 12, solver="galerkin",
+                 quadrature_order=28, quadrature_atol="1e-8", quadrature_rtol="1e-8")
+```
+
+The final row extends to infinity. `kind="graded"` adds the smooth within-layer
+factor `1 + grading*(1-exp(-(x-start)/grading_length))`; values at interfaces
+are right traces. `material.coefficient` can also be passed as `epsilon` to
+`BSKProblem` or `FluxProblem`. Decimal strings are preserved until binding to
+the solver's arithmetic. `preset_material(count)` supplies examples with
+1, 2, 3, 5, 7, or 10 genuine jumps. All layer boundaries split the quadrature.
+
+The layered manufactured reference preserves continuity of `u`, `u'`, `u''`,
+and the physical flux at every interface, including cases with nonzero flux. It uses
+the analytic within-layer epsilon derivative only to construct its exact
+source. General user coefficient callbacks do not need to supply a derivative
+to the mixed solver. These references are not generally represented exactly
+in the finite global basis; increasing decimal precision alone does not remove
+their spatial error. The
+[guided notebook](../examples/notebooks/execution_example_galerkin_discontinuous.ipynb)
+separates solve, integration, and resolution checks and includes an arbitrary
+piecewise-smooth callback example.
 
 The native catalog retains the physical equations and evaluates constants using
 the supplied arithmetic. This corrects historical rounded decimal/trigonometric
