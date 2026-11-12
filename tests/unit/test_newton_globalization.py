@@ -1,4 +1,4 @@
-"""Behavioral checks for the shared damped Newton and continuation driver.
+"""Behavioral checks for the shared fixed-parameter damped Newton driver.
 
 Run with ``python -m pytest tests/unit/test_newton_globalization.py``.  Small systems make
 the iteration policy observable independently of either spatial formulation.
@@ -90,7 +90,6 @@ class NewtonGlobalizationTests(unittest.TestCase):
                 snapshots = []
                 result = solve_newton(
                     system, atol=self.tolerance(use_mpmath),
-                    use_globalization=False,
                     callback=lambda z, step: snapshots.append((z, step)),
                 )
                 self.assertTrue(result.converged)
@@ -116,7 +115,6 @@ class NewtonGlobalizationTests(unittest.TestCase):
                 )
                 result = solve_newton(
                     system, atol=self.tolerance(use_mpmath), min_step="0.5",
-                    use_globalization=False,
                 )
                 self.assertFalse(result.converged)
                 self.assertEqual(result.reason, "line_search_failed")
@@ -137,7 +135,7 @@ class NewtonGlobalizationTests(unittest.TestCase):
             [-10], residual, lambda z, q, ctx: [[ctx.exp(z[0])]],
         )
         with np.errstate(over="ignore"):
-            result = solve_newton(system, atol="1e-12", use_globalization=False)
+            result = solve_newton(system, atol="1e-12")
         self.assertTrue(any(not np.isfinite(value) for value in evaluations))
         self.assertTrue(result.converged)
         self.assertLess(abs(result.state[0] - ctx.log(2)), 1e-12)
@@ -167,72 +165,47 @@ class NewtonGlobalizationTests(unittest.TestCase):
                     [2], lambda z, q, ctx: [ctx.mpf("inf")],
                     unexpected_jacobian, use_mpmath,
                 )
-                result = solve_newton(system, use_globalization=False)
+                result = solve_newton(system)
                 self.assertFalse(result.converged)
                 self.assertEqual(result.reason, "nonfinite_residual")
                 self.assertEqual(result.state[0], 2)
                 self.assertEqual(result.iterations, 0)
 
-    def test_nonfinite_jacobian_can_trigger_continuation_without_linear_solving(self):
+    def test_nonfinite_jacobian_is_reported_without_linear_solving_or_restart(self):
         for use_mpmath in self.backends():
-            for use_globalization in (False, True):
-                with self.subTest(mpmath=use_mpmath,
-                                  globalization=use_globalization):
-                    system, _ = self.system(
-                        [0, 0], lambda z, q, ctx: [z[0] - 1, z[1] - 1],
-                        lambda z, q, ctx: (
-                            [[ctx.mpf("nan"), 0], [0, ctx.mpf("nan")]]
-                            if q == 0 else [[1, 0], [0, 1]]
-                        ), use_mpmath,
-                    )
-                    solves = []
-                    native_solve = system.solve_linear
+            with self.subTest(mpmath=use_mpmath):
+                system, ctx = self.system(
+                    [0, 0], lambda z, q, ctx: [z[0] - 1, z[1] - 1],
+                    lambda z, q, ctx: [[ctx.mpf("nan"), 0], [0, ctx.mpf("nan")]],
+                    use_mpmath,
+                )
 
-                    def tracked_solve(a, b):
-                        solves.append(a)
-                        return native_solve(a, b)
+                def forbidden(*args):
+                    self.fail("A fixed stage cannot solve a nonfinite matrix or restart")
 
-                    system = replace(system, solve_linear=tracked_solve)
-                    result = solve_newton(
-                        system, use_globalization=use_globalization,
-                        homotopy_cutoff="0.1", max_stages=20,
-                    )
-                    self.assertEqual(result.stages[0].reason,
-                                     "nonfinite_jacobian")
-                    if use_globalization:
-                        self.assertTrue(result.converged)
-                        self.assertEqual(result.homotopy, 0)
-                        self.assertEqual(result.state[0], 1)
-                        self.assertEqual(result.state[1], 1)
-                        self.assertEqual(len(solves), 1)
-                    else:
-                        self.assertFalse(result.converged)
-                        self.assertEqual(result.reason, "nonfinite_jacobian")
-                        self.assertEqual(result.state[0], 0)
-                        self.assertEqual(result.state[1], 0)
-                        self.assertEqual(len(solves), 0)
+                system = replace(system, solve_linear=forbidden, restart=forbidden)
+                result = solve_newton(system, parameter="0.75")
+                self.assertFalse(result.converged)
+                self.assertEqual(result.reason, "nonfinite_jacobian")
+                self.assertEqual(result.homotopy, ctx.mpf("0.75"))
+                self.assertEqual(tuple(result.state), (0, 0))
+                self.assertEqual(result.iterations, 1)
+                self.assertEqual(len(result.stages), 1)
 
     def test_jacobian_overflow_follows_the_nonfinite_failure_policy(self):
         for use_mpmath in self.backends():
-            for use_globalization in (False, True):
-                with self.subTest(mpmath=use_mpmath, globalization=use_globalization):
-                    def jacobian(z, q, ctx):
-                        if q == 0:
-                            raise OverflowError("physical derivative overflow")
-                        return [[1]]
+            with self.subTest(mpmath=use_mpmath):
+                def jacobian(z, q, ctx):
+                    raise OverflowError("derivative overflow")
 
-                    system, _ = self.system(
-                        [0], lambda z, q, ctx: [z[0] - 1], jacobian, use_mpmath,
-                    )
-                    result = solve_newton(
-                        system, use_globalization=use_globalization,
-                        homotopy_cutoff="0.1", max_stages=20,
-                    )
-                    self.assertEqual(result.stages[0].reason, "nonfinite_jacobian")
-                    self.assertEqual(result.converged, use_globalization)
-                    self.assertEqual(result.state[0], 1 if use_globalization else 0)
-                    if use_globalization:
-                        self.assertEqual(result.homotopy, 0)
+                system, _ = self.system(
+                    [0], lambda z, q, ctx: [z[0] - 1], jacobian, use_mpmath,
+                )
+                result = solve_newton(system, parameter="0.5")
+                self.assertEqual(result.reason, "nonfinite_jacobian")
+                self.assertFalse(result.converged)
+                self.assertEqual(result.state[0], 0)
+                self.assertEqual(result.iterations, 1)
 
     def test_nonfinite_newton_step_is_rejected_without_changing_state(self):
         for use_mpmath in self.backends():
@@ -245,7 +218,7 @@ class NewtonGlobalizationTests(unittest.TestCase):
                     step = system.initial_guess()
                     step[0] = ctx.mpf(value)
                     system = replace(system, solve_linear=lambda a, b: step.copy())
-                    result = solve_newton(system, use_globalization=False)
+                    result = solve_newton(system)
                     self.assertFalse(result.converged)
                     self.assertEqual(result.reason, "nonfinite_step")
                     self.assertEqual(result.state[0], 0)
@@ -259,7 +232,7 @@ class NewtonGlobalizationTests(unittest.TestCase):
                     lambda z, q, ctx: [[1]], use_mpmath,
                 )
                 result = solve_newton(
-                    system, max_iterations=0, use_globalization=False,
+                    system, max_iterations=0,
                 )
                 self.assertFalse(result.converged)
                 self.assertEqual(result.reason, "max_iterations")
@@ -278,81 +251,55 @@ class NewtonGlobalizationTests(unittest.TestCase):
                 self.assertEqual(result.stages[0].initial_norm, 1000)
                 self.assertEqual(result.stages[0].target_norm, 10)
 
-    def continuation_system(self, use_mpmath=False, restart=None, dimension=1):
-        evaluations = []
+    def test_nonzero_parameter_converges_without_changing_the_parameter(self):
+        for use_mpmath in self.backends():
+            with self.subTest(mpmath=use_mpmath):
+                parameters = []
 
-        def residual(z, q, ctx):
-            evaluations.append((q, z.copy()))
-            a = ctx.exp(-q)
-            value = a * z[dimension - 1] ** 3 + (1 - a) * z[dimension - 1] - a
-            return [value] if dimension == 1 else [z[0] - 7, value]
+                def residual(z, q, ctx):
+                    parameters.append(q)
+                    return [z[0]**3-q]
 
-        def jacobian(z, q, ctx):
-            a = ctx.exp(-q)
-            value = 3 * a * z[dimension - 1] ** 2 + 1 - a
-            return [[value]] if dimension == 1 else [[1, 0], [0, value]]
+                def jacobian(z, q, ctx):
+                    parameters.append(q)
+                    return [[3*z[0]**2]]
 
+                def forbidden(*args):
+                    self.fail("A fixed stage must never invoke restart")
+
+                system, ctx = self.system(
+                    ["0.1"], residual, jacobian, use_mpmath, restart=forbidden,
+                )
+                result = solve_newton(
+                    system, parameter="0.125", atol=self.tolerance(use_mpmath),
+                    stage=4, iteration_offset=7,
+                )
+                self.assertTrue(result.converged)
+                self.assertEqual(result.homotopy, ctx.mpf("0.125"))
+                self.assertTrue(all(q == result.homotopy for q in parameters))
+                self.assertTrue(any(record.backtracks for record in result.history))
+                self.assertEqual(len(result.stages), 1)
+                self.assertEqual(result.iterations, result.stages[0].iterations)
+                self.assertEqual(result.history[0].iteration, 8)
+                self.assertEqual(result.history[-1].iteration, 7+result.iterations)
+                self.assertTrue(all(record.stage == 4 for record in result.history))
+                self.assertTrue(all(record.homotopy == result.homotopy
+                                    for record in result.history))
+                self.assertLess(abs(result.state[0]-ctx.mpf("0.5")),
+                                ctx.mpf(self.tolerance(use_mpmath)))
+
+    def test_fixed_parameter_retains_corrections_below_float64_resolution(self):
         system, ctx = self.system(
-            [0] if dimension == 1 else [7, 0], residual, jacobian,
-            use_mpmath, restart=restart,
+            ["0.5"], lambda z, q, ctx: [z[0]-q],
+            lambda z, q, ctx: [[1]], use_mpmath=True, dps=120,
         )
-        return system, ctx, evaluations
-
-    def test_continuation_must_solve_the_final_physical_system(self):
-        for use_mpmath in self.backends():
-            with self.subTest(mpmath=use_mpmath):
-                system, ctx, evaluations = self.continuation_system(use_mpmath)
-                tolerance = ctx.mpf(self.tolerance(use_mpmath))
-                result = solve_newton(
-                    system, atol=self.tolerance(use_mpmath),
-                    homotopy_cutoff="0.1", max_stages=30,
-                )
-                self.assertTrue(result.converged)
-                self.assertEqual(result.homotopy, 0)
-                self.assertEqual(result.stages[0].reason, "linear_solve_failed")
-                self.assertTrue(any(stage.homotopy > 0 for stage in result.stages))
-                self.assertTrue(result.stages[-1].converged)
-                self.assertEqual(result.stages[-1].homotopy, 0)
-                self.assertLess(abs(result.state[0] ** 3 - 1), tolerance)
-                last_positive = max(index for index, (q, _) in enumerate(evaluations)
-                                    if q > 0)
-                self.assertTrue(any(q == 0 for q, _ in evaluations[last_positive + 1:]))
-                # A stage's stopping target must use that stage's actual start.
-                for stage in result.stages:
-                    self.assertGreaterEqual(stage.initial_norm, 0)
-                    if stage.converged:
-                        self.assertLessEqual(stage.final_norm, stage.target_norm)
-
-    def test_restart_callback_preserves_a_nonzero_essential_component(self):
-        for use_mpmath in self.backends():
-            with self.subTest(mpmath=use_mpmath):
-                restarts = []
-
-                def restart(state, q):
-                    restarts.append((state.copy(), q))
-                    state[0] = 7
-                    state[1] = 0
-                    return state
-
-                system, _, evaluations = self.continuation_system(
-                    use_mpmath, restart=restart, dimension=2,
-                )
-                result = solve_newton(
-                    system, atol=self.tolerance(use_mpmath),
-                    homotopy_cutoff="0.1", max_stages=30,
-                )
-                self.assertTrue(result.converged)
-                self.assertTrue(restarts)
-                self.assertTrue(all(state[0] == 7 for _, state in evaluations))
-                self.assertEqual(result.state[0], 7)
-
-    def test_stage_limit_cannot_claim_physical_convergence(self):
-        system, _, _ = self.continuation_system()
-        result = solve_newton(system, atol="1e-12", max_stages=2)
-        self.assertFalse(result.converged)
-        self.assertEqual(result.reason, "max_stages")
-        self.assertEqual(len(result.stages), 2)
-        self.assertGreater(abs(result.state[0] ** 3 - 1), 1e-12)
+        parameter = ctx.mpf("0.5")+ctx.mpf("1e-80")
+        result = solve_newton(system, parameter=parameter, atol="1e-110")
+        self.assertTrue(result.converged)
+        self.assertEqual(result.homotopy, parameter)
+        self.assertEqual(result.state[0], parameter)
+        self.assertNotEqual(result.state[0], ctx.mpf("0.5"))
+        self.assertEqual(result.history[0].homotopy, parameter)
 
     def test_callback_receives_a_copy_of_the_accepted_state(self):
         system, _ = self.system(
@@ -389,8 +336,12 @@ class NewtonGlobalizationTests(unittest.TestCase):
         invalid_options = (
             {"max_iterations": -1},
             {"max_iterations": True},
-            {"max_stages": 0},
-            {"max_stages": 1.5},
+            {"stage": 0},
+            {"stage": True},
+            {"stage": 1.5},
+            {"iteration_offset": -1},
+            {"iteration_offset": True},
+            {"iteration_offset": 0.5},
             {"max_backtracks": 0},
             {"atol": "-1"},
             {"rtol": "-1"},
@@ -399,8 +350,8 @@ class NewtonGlobalizationTests(unittest.TestCase):
             {"atol": "0", "rtol": "0"},
             {"min_step": "0"},
             {"min_step": "1.01"},
-            {"homotopy_cutoff": "0"},
-            {"globalization_init": "0"},
+            {"parameter": "nan"},
+            {"parameter": "inf"},
         )
         for use_mpmath in self.backends():
             system, _ = self.system(
@@ -419,7 +370,7 @@ class NewtonGlobalizationTests(unittest.TestCase):
             lambda z, q, ctx: [[2 * z[0]]],
             use_mpmath=True, dps=120,
         )
-        result = solve_newton(system, atol="1e-110", use_globalization=False)
+        result = solve_newton(system, atol="1e-110")
         target = 1 + ctx.mpf("1e-80")
         self.assertTrue(result.converged)
         self.assertIsInstance(result.state[0], type(ctx.mpf(0)))

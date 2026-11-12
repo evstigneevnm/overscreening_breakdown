@@ -232,6 +232,12 @@ class ProgressTests(unittest.TestCase):
                 self.assertEqual(result.newton_result.iterations, 0)
                 self.assertFalse(any(e.kind == "iteration_end" for e in events))
                 self.assertTrue(any(e.kind == "stage_start" for e in events))
+                verification = [e for e in events if e.kind == "physical_verification_end"]
+                self.assertEqual(len(verification), 1)
+                self.assertTrue(verification[0].data["converged"])
+                self.assertEqual(verification[0].data["homotopy"], 0)
+                self.assertEqual(verification[0].data["residual_norm"],
+                                 result.newton_result.residual_norm)
                 self.assertTrue(events[-1].data["converged"])
                 self.assertEqual(events[-1].data["homotopy"], 0)
                 if solver == "galerkin":

@@ -25,6 +25,8 @@ PUBLIC_EXPORTS = {
     "QuadraturePlan": ("quadrature", "QuadraturePlan"),
     "ProgressEvent": ("diagnostics", "ProgressEvent"),
     "ProgressCallbackError": ("diagnostics", "ProgressCallbackError"),
+    "ContinuationOptions": ("continuation", "ContinuationOptions"),
+    "ScreenedLinearReference": ("continuation", "ScreenedLinearReference"),
     "solve": ("solvers", "solve"),
     "load_solution": ("solvers", "load_solution"),
     "load_legacy_collocation": ("solvers", "load_legacy_collocation"),

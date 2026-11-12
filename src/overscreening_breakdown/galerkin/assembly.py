@@ -212,7 +212,7 @@ class GalerkinAssembly:
         result._initialize(physical, basis, plan, progress=progress)
         return result
 
-    def _assemble_constant_terms(self, q_b):
+    def _constant_terms(self, epsilon_ratios):
         table, weights = self.table, self.plan.physical_weights
         m, n = self.basis.n_u, self.basis.n_w
         rows, lift_entries = [], []
@@ -233,19 +233,24 @@ class GalerkinAssembly:
             rows.append(tuple(
                 self._sum(weight*(epsilon-1)*qx[i]*vx[j]
                            for weight, epsilon, qx, vx in
-                           zip(weights, self._epsilon_ratios, table.q_dx, table.v_dx))
+                           zip(weights, epsilon_ratios, table.q_dx, table.v_dx))
                 for j in range(m)
             ) + tuple(
                 self._sum(weight*(self.delta_squared*epsilon*qx[i]*qx[j] + q[i]*q[j])
                            for weight, epsilon, qx, q in
-                           zip(weights, self._epsilon_ratios, table.q_dx, table.q))
+                           zip(weights, epsilon_ratios, table.q_dx, table.q))
                 for j in range(n)
             ))
             lift_entries.append(self._sum(
                 weight*(epsilon-1)*derivative*qx[i]
                 for weight, epsilon, derivative, qx in
-                zip(weights, self._epsilon_ratios, self._lift_derivatives, table.q_dx)
+                zip(weights, epsilon_ratios, self._lift_derivatives, table.q_dx)
             ))
+        return tuple(rows), tuple(lift_entries)
+
+    def _assemble_constant_terms(self, q_b):
+        rows, lift_entries = self._constant_terms(self._epsilon_ratios)
+        m = self.basis.n_u
         zero = self.arithmetic.scalar(0)
         wall_entries = (zero,)*m + tuple(
             self._finite(self.delta_squared*q_b*trace, "natural boundary load", ValueError)
@@ -258,6 +263,42 @@ class GalerkinAssembly:
             self._finite(lift-wall, "affine load", ValueError)
             for lift, wall in zip(lift_entries, wall_entries)
         ))
+
+    def reference_operator(self, strength="1"):
+        """Return native ``(A, d)`` for the affine linear reference ``A*z+d``.
+
+        The reference keeps this basis, plan, delta and wall data, and uses
+        constant epsilon equal to ``epsilon_b`` with physical source
+        ``epsilon_b*strength*u``. Its normalized coefficients are therefore
+        ``e=1`` and ``c=strength``. Both mixed fields are unknowns, and the
+        full wall lift contributes to the affine source load.
+
+        Assembly uses the normalized source directly, avoiding an unnecessary
+        multiplication by epsilon_b. It never evaluates the physical source
+        callbacks or changes the captured physical problem.
+        """
+        self.check_precision()
+        strength = self._finite(strength, "reference strength", ValueError)
+        if strength <= 0:
+            raise ValueError("reference strength must be strictly positive")
+        one = self.arithmetic.scalar(1)
+        rows, lift_entries = self._constant_terms((one,)*len(self.plan.nodes))
+        rows = [list(row) for row in rows]
+        offset = list(lift_entries)
+        m = self.basis.n_u
+        for i in range(self.basis.n_w):
+            row = m+i
+            for j in range(m):
+                load = self._sum(weight*strength*test[i]*trial[j]
+                                 for weight, test, trial in
+                                 zip(self.plan.physical_weights, self.table.q, self.table.v))
+                rows[row][j] = self._finite(rows[row][j]+load, "reference matrix")
+            load = self._sum(weight*strength*lift*test[i]
+                             for weight, lift, test in
+                             zip(self.plan.physical_weights, self._lift_values, self.table.q))
+            offset[row] = self._finite(offset[row]+load-self._boundary_entries[row],
+                                       "reference affine load")
+        return self.arithmetic.matrix(rows), self.arithmetic.vector(offset)
 
     @property
     def linear_matrix(self):
@@ -296,26 +337,26 @@ class GalerkinAssembly:
 
     def _parameter(self, q):
         q = self._finite(q, "homotopy parameter", ValueError)
-        if q < 0:
-            raise ValueError("homotopy parameter must be nonnegative")
+        if q != 0:
+            raise ValueError("GalerkinAssembly evaluates the physical problem at q=0; "
+                             "use the continuation path for other parameters")
         return q
 
-    def _source_values(self, a, q, derivative=False):
+    def _source_values(self, a, derivative=False):
         callback = self.physical.physical_rhs_u if derivative else self.physical.physical_rhs
         values = []
         for x, lift, v in zip(self.plan.physical_nodes, self._lift_values, self.table.v):
             u = self._sum((lift,) + tuple(entry*coefficient for entry, coefficient in zip(v, a)))
-            damping = self.arithmetic.exp(-q*x)
-            values.append(self._finite(damping*callback(x, u)/self.epsilon_b,
+            values.append(self._finite(callback(x, u)/self.epsilon_b,
                                        "normalized physical source"))
         return tuple(values)
 
     def residual(self, coefficients, q=0):
-        """Return R(a,b;q), damping only physical f by exp(-q*x)."""
+        """Return the physical residual R(a,b); only q=0 is accepted."""
         a, _, state = self._state(coefficients)
-        q = self._parameter(q)
+        self._parameter(q)
         result = list(self._linear_values(state))
-        source = self._source_values(a, q)
+        source = self._source_values(a)
         for i in range(self.basis.n_w):
             load = self._sum(weight*value*test[i] for weight, value, test in
                              zip(self.plan.physical_weights, source, self.table.q))
@@ -326,8 +367,8 @@ class GalerkinAssembly:
     def jacobian(self, coefficients, q=0):
         """Return the analytic derivative DR of the residual, with its sign."""
         a, _, _ = self._state(coefficients)
-        q = self._parameter(q)
-        derivative = self._source_values(a, q, derivative=True)
+        self._parameter(q)
+        derivative = self._source_values(a, derivative=True)
         rows = [list(row) for row in self._linear_rows]
         for i in range(self.basis.n_w):
             for j in range(self.basis.n_u):
@@ -409,7 +450,7 @@ class GalerkinAssembly:
 
     def check_refinement(self, coefficients, *, atol, rtol, q=0,
                          order_factor=2, subdivisions_factor=1, progress=None):
-        """Compare R and DR on two plans at the same fixed state and q."""
+        """Compare physical R and DR on two plans at the same fixed state."""
         _, _, state = self._state(coefficients)
         q = self._parameter(q)
         atol = self._finite(atol, "atol", ValueError)

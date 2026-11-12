@@ -23,6 +23,7 @@ import mpmath as mp
 import numpy as np
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
+from overscreening_breakdown.continuation import ContinuationOptions, ScreenedLinearReference
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.solvers import solve
 
@@ -86,7 +87,14 @@ def parser(*, precision_study=False):
     result.add_argument("--no-globalization", action="store_true")
     result.add_argument("--verbosity", type=int, choices=range(4), default=0,
                         help="solver progress: 0 quiet, 1 phases, 2 steps, 3 detailed trials")
-    result.add_argument("--globalization-init", default="1")
+    result.add_argument("--continuation-step", default="0.25",
+                        help="initial reference-to-physical parameter decrement (at most 0.5)")
+    result.add_argument("--max-continuation-stages", type=_nonnegative_integer, default=100,
+                        help="continuation attempts across all plans, including rejected stages")
+    result.add_argument("--max-total-iterations", type=_nonnegative_integer, default=1000,
+                        help="Newton attempts across all plans, including initial physical solves")
+    result.add_argument("--reference-strength", default="1",
+                        help="positive normalized reaction in the screened linear reference")
     result.add_argument("--quadrature-order", nargs="+", type=_positive_integer)
     result.add_argument("--subdivisions", type=_positive_integer, default=1)
     result.add_argument("--quadrature-atol")
@@ -208,7 +216,18 @@ def _newton_metadata(result):
             "homotopy": result.homotopy, "history": result.history, "stages": result.stages,
             "iterations": result.iterations, "adjoint_steps": result.adjoint_steps,
             "adjoint_evaluations": result.adjoint_evaluations,
-            "recovery_reasons": result.recovery_reasons}
+            "recovery_reasons": result.recovery_reasons,
+            "reference_result": result.reference_result,
+            "continuation_attempts": result.continuation_attempts}
+
+
+def _continuation_options(options):
+    return ContinuationOptions(
+        reference=ScreenedLinearReference(strength=options.reference_strength),
+        initial_step=options.continuation_step,
+        max_stages=options.max_continuation_stages,
+        max_total_iterations=options.max_total_iterations,
+    )
 
 
 def _diagnostics(*args, **kwargs):
@@ -230,7 +249,7 @@ def _common(case, options, N, precision, quadrature_order):
         use_mpmath=options.arithmetic == "mpmath", precision=precision,
         method=options.method, tolerance=options.tolerance,
         max_iterations=options.max_iterations, use_globalization=not options.no_globalization,
-        globalization_init=options.globalization_init, quadrature_order=quadrature_order,
+        continuation=_continuation_options(options), quadrature_order=quadrature_order,
         subdivisions=options.subdivisions, quadrature_atol=options.quadrature_atol,
         quadrature_rtol=options.quadrature_rtol, max_refinements=options.max_refinements,
         verbosity=options.verbosity,
@@ -281,7 +300,7 @@ def _legacy(case, options, N, precision):
             use_method=options.method, tolerance=arithmetic.scalar(options.tolerance),
             total_iterations=options.max_iterations,
             use_globalization=not options.no_globalization,
-            globalization_init=arithmetic.scalar(options.globalization_init),
+            continuation=_continuation_options(options),
             verbosity=options.verbosity)
         coefficients = discretization.solve_problem()
         converged = discretization.is_converged()

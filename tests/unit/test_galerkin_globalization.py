@@ -4,10 +4,11 @@ from dataclasses import replace
 import unittest
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
+from overscreening_breakdown.continuation import solve_continuation
 from overscreening_breakdown.galerkin.assembly import GalerkinAssembly
 from overscreening_breakdown.galerkin.basis import GalerkinBasis
 from overscreening_breakdown.manufactured import rational_case
-from overscreening_breakdown.nonlinear_solver import LinearSolveError, solve_newton
+from overscreening_breakdown.nonlinear_solver import LinearSolveError
 from overscreening_breakdown.quadrature import QuadratureFactory
 
 
@@ -29,9 +30,9 @@ class GalerkinGlobalizationTests(unittest.TestCase):
 
             accepted = []
             tolerance = arithmetic.scalar("1e-42" if arithmetic.use_mpmath else "1e-11")
-            result = solve_newton(
+            result = solve_continuation(
                 replace(system, solve_linear=fail_first), atol=tolerance, max_iterations=30,
-                use_globalization=True, homotopy_cutoff="0.25",
+                reference_factory=assembly.reference_operator, use_globalization=True,
                 callback=lambda state, record: accepted.append(state),
             )
             self.assertTrue(result.converged, result.reason)

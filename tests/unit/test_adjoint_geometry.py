@@ -7,6 +7,7 @@ import numpy as np
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
 from overscreening_breakdown.collocation.globalization import CollocationMeritGeometry
+from overscreening_breakdown.continuation import AffineReference, ResidualHomotopy
 from overscreening_breakdown.galerkin.assembly import GalerkinAssembly
 from overscreening_breakdown.galerkin.basis import GalerkinBasis
 from overscreening_breakdown.manufactured import rational_case
@@ -179,11 +180,14 @@ class AdjointGeometryTests(unittest.TestCase):
                 state = arithmetic.vector(["0.125", "-0.0625", "0.03125", "-0.3", "0.4", "-0.1", "0.05"])
                 variation = arithmetic.vector(["0.1", "-0.2", "0.05", "0.25", "-0.125", "0.1", "-0.05"])
                 q = arithmetic.scalar("0.75")
-                system = assembly.nonlinear_system(state)
+                physical = assembly.nonlinear_system(state)
+                matrix, offset = assembly.reference_operator()
+                system = ResidualHomotopy(
+                    physical, AffineReference(matrix, offset, physical)).nonlinear_system(state)
                 gradient = system.merit_gradient(system.residual(state, q), system.jacobian(state, q))
                 self.assertGreater(arithmetic.norm(arithmetic.vector(tuple(gradient)[basis.n_u:])), 0)
                 self.assert_directional_derivative(
-                    arithmetic, lambda z: assembly.residual_norm(assembly.residual(z, q))**2/2,
+                    arithmetic, lambda z: system.residual_norm(system.residual(z, q))**2/2,
                     state, variation, gradient)
                 direction = system.adjoint_direction(gradient)
                 self.assertEqual(arithmetic.norm(direction+gradient), 0)

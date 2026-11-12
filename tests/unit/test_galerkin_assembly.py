@@ -185,15 +185,12 @@ class GalerkinAssemblyTests(unittest.TestCase):
                 first = self.assembly(arithmetic, problem(1))
                 second = self.assembly(arithmetic, problem(7))
                 state = arithmetic.vector(["0.1", "-0.03", "0.02", "0.5", "0.1", "-0.2", "0.1"])
-                for parameter in (0, arithmetic.scalar("0.375")):
-                    self.assertLess(arithmetic.norm(first.residual(state, parameter)
-                                                    -second.residual(state, parameter)),
-                                    self.tolerance(arithmetic))
-                    self.assertLess(arithmetic.norm(first.jacobian(state, parameter)
-                                                    -second.jacobian(state, parameter)),
-                                    self.tolerance(arithmetic))
+                self.assertLess(arithmetic.norm(first.residual(state)-second.residual(state)),
+                                self.tolerance(arithmetic))
+                self.assertLess(arithmetic.norm(first.jacobian(state)-second.jacobian(state)),
+                                self.tolerance(arithmetic))
 
-    def test_nonlinear_jacobian_direction_at_non_solution_and_nonzero_homotopy(self):
+    def test_physical_nonlinear_jacobian_direction_at_non_solution(self):
         for arithmetic in self.arithmetics():
             with self.subTest(backend=arithmetic.backend, dps=arithmetic.dps):
                 assembly = self.assembly(arithmetic, rational_problem(1, 1))
@@ -201,21 +198,13 @@ class GalerkinAssemblyTests(unittest.TestCase):
                 direction = arithmetic.vector([1, -2, 3, -1, 2, -3, 1])
                 digits = arithmetic.dps if arithmetic.use_mpmath else 15
                 step = arithmetic.scalar("1e-{}".format(max(4, digits//3)))
-                parameter = arithmetic.scalar("0.375")
-                difference = (assembly.residual(state+step*direction, parameter)
-                              -assembly.residual(state-step*direction, parameter))/(2*step)
-                matrix = assembly.jacobian(state, parameter)
+                difference = (assembly.residual(state+step*direction)
+                              -assembly.residual(state-step*direction))/(2*step)
+                matrix = assembly.jacobian(state)
                 observed = matrix*direction if arithmetic.use_mpmath else matrix @ direction
                 relative = arithmetic.norm(difference-observed)/max(arithmetic.scalar(1), arithmetic.norm(observed))
                 bound = arithmetic.scalar("3e-{}".format(max(7, 2*(digits//3)-4)))
                 self.assertLess(relative, bound)
-                # Homotopy acts on the physical source, leaving the first
-                # equation and fixed operator blocks unchanged.
-                physical = assembly.residual(state, 0)
-                damped = assembly.residual(state, parameter)
-                for i in range(3):
-                    self.assertEqual(physical[i], damped[i])
-                self.assertGreater(arithmetic.norm(physical-damped), 0)
 
     def test_fixed_operator_and_sources_reuse_only_interior_interface_nodes(self):
         for arithmetic in (NumpyArithmetic(), MpmathArithmetic(50)):
@@ -247,7 +236,7 @@ class GalerkinAssemblyTests(unittest.TestCase):
             state = arithmetic.zeros(7)
             assembly.residual(state)
             assembly.jacobian(state)
-            assembly.residual(state, arithmetic.scalar("0.25"))
+            assembly.residual(state)
             self.assertEqual(len(calls["epsilon"]), fixed_calls)
             for name in ("f", "f_u"):
                 self.assertTrue(calls[name])
@@ -409,7 +398,7 @@ class GalerkinAssemblyTests(unittest.TestCase):
             self.assertIs(refined.basis, assembly.basis)
             self.assertIs(refined.physical, assembly.physical)
             self.assertGreater(len(refined.plan.nodes), len(assembly.plan.nodes))
-            estimate = assembly.check_refinement(state, atol=0, rtol=0, q="0.375")
+            estimate = assembly.check_refinement(state, atol=0, rtol=0)
             self.assertFalse(estimate.converged)
             self.assertGreater(estimate.residual_difference, 0)
             self.assertGreater(estimate.jacobian_difference, 0)
@@ -427,10 +416,12 @@ class GalerkinAssemblyTests(unittest.TestCase):
             for operation in (assembly.residual, assembly.jacobian, assembly.linear_residual):
                 with self.assertRaises(ValueError):
                     operation(invalid)
-        for parameter in ("nan", "inf", -1):
+        for parameter in ("nan", "inf", -1, "0.375", 1):
             for operation in (assembly.residual, assembly.jacobian):
                 with self.assertRaises(ValueError):
                     operation(arithmetic.zeros(7), parameter)
+            with self.assertRaises(ValueError):
+                assembly.check_refinement(arithmetic.zeros(7), atol=0, rtol=0, q=parameter)
 
         def broken(x, u, a):
             raise RuntimeError("user source failed")
@@ -441,14 +432,14 @@ class GalerkinAssemblyTests(unittest.TestCase):
         nonfinite_source = self.assembly(arithmetic, self.problem(f=lambda x, u, a: a.inf))
         with self.assertRaises(OverflowError):
             nonfinite_source.residual(arithmetic.zeros(7))
-        result = solve_newton(nonfinite_source.nonlinear_system(), use_globalization=False)
+        result = solve_newton(nonfinite_source.nonlinear_system())
         self.assertFalse(result.converged)
         self.assertEqual(result.reason, "nonfinite_residual")
         nonfinite_derivative = self.assembly(arithmetic, self.problem(
             f=lambda x, u, a: a.exp(-x), f_u=lambda x, u, a: a.inf))
         with self.assertRaises(OverflowError):
             nonfinite_derivative.jacobian(arithmetic.zeros(7))
-        result = solve_newton(nonfinite_derivative.nonlinear_system(), use_globalization=False)
+        result = solve_newton(nonfinite_derivative.nonlinear_system())
         self.assertFalse(result.converged)
         self.assertEqual(result.reason, "nonfinite_jacobian")
 

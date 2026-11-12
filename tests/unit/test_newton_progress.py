@@ -56,7 +56,7 @@ class NewtonProgressTests(unittest.TestCase):
 
                     result = solve_newton(
                         system, atol="1e-30" if arithmetic.use_mpmath else "1e-12",
-                        use_globalization=False, callback=observe, progress=reporter)
+                        callback=observe, progress=reporter)
                     self.assertTrue(result.converged)
                     snapshot = (tuple(result.state), tuple(result.history), counts.copy())
                     if reference is None:
@@ -93,44 +93,45 @@ class NewtonProgressTests(unittest.TestCase):
         self.assertFalse(any(event.kind == "iteration_start" for event in events))
         self.assertTrue(events[-1].data["converged"])
 
-    def test_continuation_reports_failed_stage_and_verified_final_zero_separately(self):
+    def test_fixed_stage_reports_native_parameter_and_global_iteration_labels(self):
         arithmetic = MpmathArithmetic(30)
         events = []
-
-        def linear(matrix, rhs):
-            try:
-                return arithmetic.solve(matrix, rhs)
-            except ZeroDivisionError as error:
-                raise LinearSolveError(str(error)) from error
-
+        parameter = arithmetic.scalar("0.375")
         system = NonlinearSystem(
-            residual=lambda z, q: arithmetic.vector([z[0]**2+q*z[0]-1]),
-            jacobian=lambda z, q: arithmetic.matrix([[2*z[0]+q]]),
-            solve_linear=linear, residual_norm=arithmetic.norm,
+            residual=lambda z, q: arithmetic.vector([z[0]-q]),
+            jacobian=lambda z, q: arithmetic.matrix([[1]]),
+            solve_linear=arithmetic.solve, residual_norm=arithmetic.norm,
             initial_guess=lambda: arithmetic.vector([0]), scalar=arithmetic.scalar,
             isfinite=arithmetic.isfinite,
         )
         result = solve_newton(
-            system, atol="1e-22", homotopy_cutoff="0.2", max_stages=10,
+            system, parameter=parameter, stage=4, iteration_offset=11, atol="1e-22",
             progress=ProgressReporter(progress_callback=events.append, arithmetic=arithmetic))
         self.assertTrue(result.converged)
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(result.history[0].iteration, 12)
+        self.assertEqual(result.history[0].stage, 4)
+        self.assertEqual(result.homotopy, parameter)
         starts = [event for event in events if event.kind == "stage_start"]
         ends = [event for event in events if event.kind == "stage_end"]
-        self.assertEqual(len(starts), len(result.stages))
-        self.assertEqual(len(ends), len(result.stages))
-        self.assertFalse(ends[0].data["converged"])
-        self.assertTrue(ends[-1].data["converged"])
-        self.assertEqual(ends[-1].data["homotopy"], 0)
-        self.assertEqual(events[-1].data["homotopy"], 0)
-        self.assertTrue(any(event.kind == "restart_start" for event in events))
-        self.assertTrue(any(event.kind == "homotopy_transition" for event in events))
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(len(ends), 1)
+        self.assertTrue(ends[0].data["converged"])
+        self.assertTrue(all(event.data["homotopy"] == parameter
+                            for event in events if "homotopy" in event.data))
+        self.assertTrue(all(event.data["stage"] == 4
+                            for event in events if "stage" in event.data))
+        self.assertTrue(all(event.data["iteration"] == 12
+                            for event in events if "iteration" in event.data))
+        self.assertFalse(any(event.kind in ("restart_start", "homotopy_transition")
+                             for event in events))
 
     def test_adjoint_trials_and_accepted_steps_have_distinct_events(self):
         arithmetic = MpmathArithmetic(30)
         events, accepted = [], []
         system, _ = self.system(arithmetic, fail_first=True)
         result = solve_newton(
-            system, atol="1e-22", use_globalization=False, newton_fallback="adjoint",
+            system, atol="1e-22", newton_fallback="adjoint",
             callback=lambda state, record: accepted.append(record),
             progress=ProgressReporter(progress_callback=events.append, arithmetic=arithmetic))
         self.assertTrue(result.converged)
@@ -153,7 +154,7 @@ class NewtonProgressTests(unittest.TestCase):
                 raise OverflowError("observer defect")
 
         with self.assertRaises(ProgressCallbackError) as caught:
-            solve_newton(system, use_globalization=True,
+            solve_newton(system,
                          progress=ProgressReporter(progress_callback=observer,
                                                    arithmetic=arithmetic))
         self.assertIsInstance(caught.exception.__cause__, OverflowError)

@@ -6,7 +6,8 @@ import mpmath #for custom pecision arithmetic
 from inspect import isfunction, isclass
 from numbers import Integral
 
-from overscreening_breakdown.nonlinear_solver import LinearSolveError, NonlinearSystem, solve_newton
+from overscreening_breakdown.nonlinear_solver import LinearSolveError, NonlinearSystem
+from overscreening_breakdown.continuation import solve_continuation
 from overscreening_breakdown.collocation.adapter import CollocationProblemAdapter, prepare_collocation_problem
 from overscreening_breakdown.arithmetic import NumpyArithmetic, MpmathArithmetic
 from overscreening_breakdown.rational_mapping import RationalHalfLineMap
@@ -19,7 +20,8 @@ from overscreening_breakdown.diagnostics import ProgressReporter
 class basis_functions(object):
     def __init__(self, N, L = 1, use_mpmath = False, prec = 100, calc_domain = [0, np.inf]):
         self.__N = N
-        self.__M = N+2 #for boundary conditions
+        self.__M = N+2
+        self.__boundary_sides = ("l", "r")
         self.__L = L
         self._calc_domain = calc_domain
         self.__configure_backend(use_mpmath, prec)
@@ -93,25 +95,30 @@ class basis_functions(object):
             raise ValueError("logical_error: __circlemap_in_t j: "+str(np.max(j)) + " " + str(np.min(j)) );
         return self.__mp.pi*(2*(j+1) - 1)/(2.0*self.__N)
     
-    def circlemap_with_bound_in_t(self, j): 
-    #it is assumed that j runs through 0,...,self._M-1 while Chebyshev zeroes are located at k(=j-1) in 0,...,self.N_-1
-        k = j-1;
-        if (np.max(j)>self.__M) or (np.min(j)<0):
-            raise ValueError("logical_error: circlemap_with_bound_in_t j: "+str(np.max(k)) + " " + str(np.min(k)) );
-        j_length = self.__get_length(j)
-        if j_length == 1:
-            if j==0:
-                value = 0;
-            elif j==self.__M-1:
-                value = self.__mp.pi
-            else:
-                value = self.__mp.pi*(2*(k+1) - 1)/(2*self.__N)
-        else:
-            value = self.__mp.pi*(2*(k+1) - 1)/(2*self.__N)
-            value[0] = 0;
-            value[-1:] = self.__mp.pi
+    def set_boundary_layout(self, sides):
+        """Keep tau-row coordinates consistent with the actual boundary count."""
+        sides = tuple(sides)
+        if any(side not in ("l", "r") for side in sides):
+            raise ValueError("boundary sides must be 'l' or 'r'")
+        self.__boundary_sides = sides
+        self.__M = self.__N + len(sides)
 
-        return value
+    def circlemap_with_bound_in_t(self, j):
+        indices = np.asarray(j)
+        if np.any(indices < 0) or np.any(indices >= self.__M):
+            raise ValueError("boundary collocation index is outside the active rows")
+        dtype = object if self.__use_mpmath else np.float64
+        values = np.empty(indices.shape, dtype=dtype)
+        for index in np.ndindex(indices.shape):
+            row = int(indices[index])
+            if self.__boundary_sides and (row == 0 or row > self.__N):
+                boundary = 0 if row == 0 else row-self.__N
+                side = self.__boundary_sides[boundary]
+                values[index] = self.__mp.pi if side == "r" else 0
+            else:
+                interior = row-1 if self.__boundary_sides else row
+                values[index] = self.__mp.pi*(2*interior+1)/(2*self.__N)
+        return values[()] if values.ndim == 0 else values
 
     def __half_line_map(self):
         bits = self.__mp.mp.prec if self.__use_mpmath else 53
@@ -377,12 +384,13 @@ class basis_functions(object):
 class basic_discretization(object):
     def __init__(self, N, domain, L = 1, use_mpmath = False, prec = 100):
         self._N = N
-        self._M = self._N+2 # due to additional boundary constraints        
+        self._M = self._N
         self._additional_boundaries = 0
         # self._domain = domain
         self._basis = basis_functions(N = N, L = L, use_mpmath = use_mpmath, prec = prec, calc_domain = domain)
         self._basis.test()
         self.set_domain(domain)
+        self._basis.set_boundary_layout(())
         #Dirichlet, 1st derivative, ..., 4th derivative
         self._boundary_conditions_left = [None, None, None, None, None]
         self._boundary_conditions_right = [None, None, None, None, None]
@@ -432,10 +440,10 @@ class basic_discretization(object):
             if bnd[0] != None:
                 self._additional_boundaries = self._additional_boundaries + 1 
 
-        # self._additional_boundaries = max(self._additional_boundaries, 0)
-        # print(self._boundaries)
-        # print(self._additional_boundaries)
-        #set number of BCs!
+        self._M = self._N + self._additional_boundaries
+        self._basis.set_boundary_layout(
+            boundary[2] for boundary in self._boundaries if boundary[0] is not None
+        )
     def is_using_mpmath(self):
         return self._basis.is_using_mpmath()
 
@@ -790,14 +798,12 @@ class collocation_discretization(basic_discretization):
         is_there_boundaries = 0 if self._additional_boundaries==0 else 1
         x = self.all_discrete_points_in_domain()
         t = self.all_discrete_points_in_basis()
-        for j in range(0, self._N+self._additional_boundaries):
-            for k in range(0, self._N+self._additional_boundaries):
-                if j>=is_there_boundaries and j<self._N+is_there_boundaries:
-                    ppp = self.psi(k, t[j-is_there_boundaries])*operator(x[j-is_there_boundaries], t[j-is_there_boundaries], **kwargs)
-                    if hasattr(ppp, "__len__"):
-                        N[j, k] = ppp[0]
-                    else:
-                        N[j, k] = ppp
+        for point in range(self._N):
+            row = point + is_there_boundaries
+            coefficient = np.asarray(operator(x[point], t[point], **kwargs)).item()
+            for column in range(self._N+self._additional_boundaries):
+                value = self.psi(column, t[point])*coefficient
+                N[row, column] = np.asarray(value).item()
         return N
 
     def linear_functional_linearization_boundary(self, N):
@@ -858,7 +864,7 @@ class collocation_discretization(basic_discretization):
 
 
 class solve_nonlinear_problem(collocation_discretization):
-    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, globalization_init = 1.0, use_mpmath = False, prec = 100, *, initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200, newton_fallback=None, adjoint_max_steps=20, verbosity=0, progress_callback=None, progress_interval=1.0, _reporter=None):
+    def __init__(self, N, domain = None, problem = None, L = 1, tolerance = 1.0e-8, use_method = "newton", visualize = False, total_iterations = 50, use_globalization = True, use_mpmath = False, prec = 100, *, initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200, newton_fallback=None, adjoint_max_steps=20, verbosity=0, progress_callback=None, progress_interval=1.0, continuation=None, _reporter=None):
         validate_initializer(initializer, use_mpmath=use_mpmath,
                              tolerance=initializer_tolerance,
                              max_evaluations=initializer_max_evaluations)
@@ -869,6 +875,7 @@ class solve_nonlinear_problem(collocation_discretization):
         if (isinstance(adjoint_max_steps, bool) or not isinstance(adjoint_max_steps, Integral)
                 or adjoint_max_steps < 0):
             raise ValueError("adjoint_max_steps must be a nonnegative integer")
+        self.__continuation = continuation
         self.__initializer = initializer
         self.__initializer_tolerance = initializer_tolerance
         self.__initializer_max_evaluations = int(initializer_max_evaluations)
@@ -886,15 +893,15 @@ class solve_nonlinear_problem(collocation_discretization):
             problem = prepare_collocation_problem(problem, use_mpmath=use_mpmath, prec=prec)
         if domain != None and problem == None:
             super().__init__(N = N, domain = domain, L = L, use_mpmath = use_mpmath, prec = prec)
-            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec)
+            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, use_mpmath = use_mpmath, prec = prec)
         elif problem != None and domain == None:
             super().__init__(N = N, domain = problem.get_domain(), L = L, use_mpmath = use_mpmath, prec = prec)
-            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, globalization_init = globalization_init, use_mpmath = use_mpmath, prec = prec)
+            self.__common_constructor_operations(N = N, tolerance = tolerance, use_method = use_method, visualize = visualize, total_iterations = total_iterations, use_globalization = use_globalization, use_mpmath = use_mpmath, prec = prec)
             self.set_problem(problem)
         else:
             raise ValueError("solve_nonlinear_problem: either 'problem' or 'domain' must be provided in the constructor.")
 
-    def __common_constructor_operations(self, N, tolerance, use_method, visualize, total_iterations, use_globalization, globalization_init, use_mpmath, prec):
+    def __common_constructor_operations(self, N, tolerance, use_method, visualize, total_iterations, use_globalization, use_mpmath, prec):
         self._N = N
         self.__use_method = use_method # "root", "nonlin_solve", "newton"
         self.__visualize = visualize #can be used only in "newton" method
@@ -903,8 +910,6 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__problem = None
         self.__S = None
         self.__use_globalization = use_globalization
-        self.__globalization_init = globalization_init
-        self.__globalization = 0
         self.__base_solution = None
         self.__converged = False
         self.__newton_result = None
@@ -958,6 +963,8 @@ class solve_nonlinear_problem(collocation_discretization):
             c=c, q=q,
         )
         rhs = self.linear_functional_boundary(rhs)
+        if self.__use_mpmath:
+            rhs = self.__mp_ref.matrix(list(rhs))
         return rhs
     
     def __right_hand_side_linearization(self, c, q):
@@ -973,8 +980,10 @@ class solve_nonlinear_problem(collocation_discretization):
         N = self.linear_functional_linearization_boundary(N)
         return N
 
-    def __residual_operator(self, c, q = None):
-        rhs = self.__right_hand_side(c, self.__globalization if q is None else q)
+    def __residual_operator(self, c, q=0):
+        if q != 0:
+            raise ValueError("physical residual requires q=0; use the continuation wrapper")
+        rhs = self.__right_hand_side(c, 0)
         if self.__use_mpmath:
             lhs = self.__S*c#self.__dot(self.__S, c)
         else:
@@ -982,8 +991,10 @@ class solve_nonlinear_problem(collocation_discretization):
         res = rhs-lhs
         return res
         
-    def __linearization_operator(self, c, q = None):
-        N = self.__right_hand_side_linearization(c, self.__globalization if q is None else q)
+    def __linearization_operator(self, c, q=0):
+        if q != 0:
+            raise ValueError("physical Jacobian requires q=0; use the continuation wrapper")
+        N = self.__right_hand_side_linearization(c, 0)
         A = -(self.__S-N)
         return A
 
@@ -1029,6 +1040,93 @@ class solve_nonlinear_problem(collocation_discretization):
                                    N=self._N, unknown_count=self._M):
             self.__form_matrices()
 
+    def nonlinear_system(self, initial_guess=None):
+        """Expose the physical callbacks and native merit geometry.
+
+        Continuation wraps this fixed physical system instead of modifying
+        the physical RHS callbacks or their shared problem description.
+        """
+        scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
+        initial = (self.__base_solution_expand() if initial_guess is None
+                   else initial_guess.copy())
+        if len(initial) != self._M:
+            raise ValueError("initial coefficient count does not match the collocation basis")
+
+        def solve_linear(matrix, rhs):
+            try:
+                return self.solve(matrix, rhs)
+            except (np.linalg.LinAlgError, ZeroDivisionError) as error:
+                raise LinearSolveError(str(error)) from error
+
+        merit_options = {}
+        if self.__newton_fallback == "adjoint":
+            # Use the actual tau rows, including nonzero prescribed data.
+            # The direction preserves their current traces; Newton still
+            # checks the full residual, including every boundary equation.
+            arithmetic = MpmathArithmetic(self.__precision) if self.__use_mpmath else NumpyArithmetic()
+            indices = ([0] + [self._N+j for j in range(1, self._additional_boundaries)]
+                       if self._additional_boundaries else [])
+            boundary_rows = [[self.__S[row, column] for column in range(self._M)]
+                             for row in indices]
+            geometry = CollocationMeritGeometry(arithmetic, boundary_rows, self._M)
+
+            def adjoint_direction(gradient):
+                try:
+                    return geometry.adjoint_direction(gradient)
+                except (np.linalg.LinAlgError, ZeroDivisionError) as error:
+                    raise LinearSolveError(str(error)) from error
+
+            if self.__use_mpmath:
+                # The collocation kernel still uses global mp matrices.
+                # Convert clone-owned geometry results back to that matrix
+                # class without passing through float64; the public wrapper
+                # snapshots all diagnostics in its independent owner later.
+                merit_options = dict(
+                    merit_gradient=lambda residual, matrix: self.__mp_ref.matrix(tuple(
+                        geometry.merit_gradient(residual, matrix))),
+                    dot=lambda left, right: scalar(geometry.dot(left, right)),
+                    adjoint_direction=lambda gradient: self.__mp_ref.matrix(tuple(
+                        adjoint_direction(gradient))),
+                )
+            else:
+                merit_options = dict(merit_gradient=geometry.merit_gradient,
+                                     dot=geometry.dot,
+                                     adjoint_direction=adjoint_direction)
+
+        return NonlinearSystem(
+            residual=self.__residual_operator,
+            jacobian=self.__linearization_operator,
+            solve_linear=solve_linear,
+            residual_norm=lambda residual: self.__norm(residual)/self.__sqrt(self._M),
+            initial_guess=lambda: initial.copy(),
+            scalar=scalar,
+            isfinite=self.__mp_ref.isfinite,
+            **merit_options,
+        )
+
+    def reference_operator(self, strength="1"):
+        """Return A,b for the normalized screened reference R(c)=A*c+b.
+
+        The same differential operator and tau data are used as in the
+        physical discretization; only the source is replaced by strength*u.
+        No physical source callback is evaluated here.
+        """
+        scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
+        strength = scalar(strength)
+        if not self.__mp_ref.isfinite(strength) or strength <= 0:
+            raise ValueError("reference strength must be finite and positive")
+        scale = self.__problem.left_hand_side()[2]
+        scale = scalar(1) if scale is None else scalar(scale)
+        reaction = self.mass_matrix()*strength*scale
+        reaction = self.linear_functional_linearization_boundary(reaction)
+        matrix = reaction-self.__S
+        if self.__use_mpmath:
+            offset = self.__mp_ref.zeros(self._M, 1)
+        else:
+            offset = np.zeros(self._M, dtype=np.float64)
+        offset = self.linear_functional_boundary(offset)
+        return matrix, offset
+
     def residual_L2_norm(self, c):
         relnorm = self.__norm(self.__residual_operator(c))/self.__sqrt(self._M)
         return relnorm
@@ -1059,10 +1157,11 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__progress.emit(
                 "solve_end", converged=self.__converged,
                 nonlinear_converged=self.__converged,
-                residual_norm=self.__final_residual_norm,
+                residual_norm=getattr(diagnostics, "residual_norm", self.__final_residual_norm),
                 reason=getattr(diagnostics, "reason", "converged" if self.__converged
                                else "not_converged"),
-                homotopy=self.__reporting_arithmetic.scalar(0))
+                homotopy=getattr(diagnostics, "homotopy",
+                                 self.__reporting_arithmetic.scalar(0)))
         return coefficients
 
     def __solve_problem(self, c0=None):
@@ -1072,8 +1171,6 @@ class solve_nonlinear_problem(collocation_discretization):
         if validate is not None:
             validate()
         converged = False
-        with self.__progress.phase("initial_expansion", level=1):
-            c_ref = self.__base_solution_expand()
         if c0 is not None:
             self.__base_solution = c0   
         with self.__progress.phase("initial_guess", level=1):
@@ -1085,7 +1182,6 @@ class solve_nonlinear_problem(collocation_discretization):
                     interior_only=isinstance(self.__problem, CollocationProblemAdapter),
                 )
         c = c0;
-        self.__globalization = 0
 
         if self.__initializer == "fsolve":
             initial_system = NonlinearSystem(
@@ -1162,75 +1258,23 @@ class solve_nonlinear_problem(collocation_discretization):
         elif self.__use_method == "newton":
             scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
 
-            def solve_linear(matrix, rhs):
-                try:
-                    return self.solve(matrix, rhs)
-                except (np.linalg.LinAlgError, ZeroDivisionError) as error:
-                    raise LinearSolveError(str(error)) from error
-
             def iteration_callback(coefficients, iteration):
                 if self.__visualize:
                     t = np.arange(0, np.pi, 0.01)
                     u = self.obtain_solution_in_basis(coefficients, t)
                     plt.plot(t, u, label=iteration.iteration)
 
-            merit_options = {}
-            if self.__newton_fallback == "adjoint":
-                # Use the actual tau rows, including nonzero prescribed data.
-                # The direction preserves their current traces; Newton still
-                # checks the full residual, including every boundary equation.
-                arithmetic = MpmathArithmetic(self.__precision) if self.__use_mpmath else NumpyArithmetic()
-                indices = ([0] + [self._N+j for j in range(1, self._additional_boundaries)]
-                           if self._additional_boundaries else [])
-                boundary_rows = [[self.__S[row, column] for column in range(self._M)]
-                                 for row in indices]
-                geometry = CollocationMeritGeometry(arithmetic, boundary_rows, self._M)
-
-                def adjoint_direction(gradient):
-                    try:
-                        return geometry.adjoint_direction(gradient)
-                    except (np.linalg.LinAlgError, ZeroDivisionError) as error:
-                        raise LinearSolveError(str(error)) from error
-
-                if self.__use_mpmath:
-                    # The collocation kernel still uses global mp matrices.
-                    # Convert clone-owned geometry results back to that matrix
-                    # class without passing through float64; the public wrapper
-                    # snapshots all diagnostics in its independent owner later.
-                    merit_options = dict(
-                        merit_gradient=lambda residual, matrix: self.__mp_ref.matrix(tuple(
-                            geometry.merit_gradient(residual, matrix))),
-                        dot=lambda left, right: scalar(geometry.dot(left, right)),
-                        adjoint_direction=lambda gradient: self.__mp_ref.matrix(tuple(
-                            adjoint_direction(gradient))),
-                    )
-                else:
-                    merit_options = dict(merit_gradient=geometry.merit_gradient,
-                                         dot=geometry.dot,
-                                         adjoint_direction=adjoint_direction)
-
-            system = NonlinearSystem(
-                residual=self.__residual_operator,
-                jacobian=self.__linearization_operator,
-                solve_linear=solve_linear,
-                residual_norm=lambda residual: self.__norm(residual)/self.__sqrt(self._M),
-                initial_guess=lambda: c.copy(),
-                scalar=scalar,
-                isfinite=self.__mp_ref.isfinite,
-                # Expansion applies the wall conditions; zeroing all coefficients
-                # would erase nonzero essential data during continuation.
-                restart=lambda state, q: c_ref.copy(),
-                **merit_options,
-            )
+            system = self.nonlinear_system(c)
             # Preserve the historical RMS stopping threshold exposed by tolerance.
             target = scalar(self.__tolerance)*self.__sqrt(self._M)
-            self.__newton_result = solve_newton(
+            self.__newton_result = solve_continuation(
                 system,
+                reference_factory=self.reference_operator,
+                options=self.__continuation,
                 atol=target,
                 rtol=0,
                 max_iterations=self.__total_iterations,
                 use_globalization=self.__use_globalization,
-                globalization_init=self.__globalization_init,
                 newton_fallback=self.__newton_fallback,
                 adjoint_max_steps=self.__adjoint_max_steps,
                 callback=iteration_callback,

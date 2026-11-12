@@ -56,6 +56,15 @@ Both solvers can enable native adjoint recovery with `newton_fallback="adjoint"`
 including mpmath runs. Initialization, adjoint steps, and homotopy have separate
 controls and diagnostics; see the [public API guide](docs/public_api.md).
 
+With `use_globalization=True`, a failed physical Newton solve can recover from
+a computed screened linear reference. Both methods follow the same complete
+residual blend from `q=1` to the original problem at `q=0`, retaining accepted
+states and reducing the continuation step after a failed stage. Physical source
+callbacks remain independent of `q`. Configure `ContinuationOptions` and
+`ScreenedLinearReference` through `continuation=...`; `globalization_init` has
+been removed. See [reference continuation](docs/numerical_methods.md#reference-continuation)
+for defaults, separate stage and total budgets, and reference diagnostics.
+
 Set `verbosity=2` on either solver for live phase and iteration diagnostics,
 or `0` for quiet library calls. Notebook helpers and example command lines
 default to level 2; scripts accept `--verbosity 0` through `--verbosity 3`.
@@ -152,7 +161,9 @@ For more details we refer to our article: <https://arxiv.org/abs/2401.13458>
 #### Numerical method
 
 The problem is solved on the $R^+$ domain by using an analytical mapping to the domain [0, pi].
-Newton's method with spectral discretization over the collocation method is used in order to find the solution from some initial guess. The method includes homotopy for difficult cases that allow one to converge to the solution.
+Newton's method with spectral collocation computes a solution from an initial
+guess. Reference continuation provides recovery for difficult cases; successful
+completion requires a verified residual for the original physical problem.
 For the example-driven manual, see:
 
 ```

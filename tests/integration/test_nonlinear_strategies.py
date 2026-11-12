@@ -47,8 +47,7 @@ class NonlinearStrategyTests(unittest.TestCase):
         return wrapped, observed
 
     def patch_target(self, solver):
-        return ("overscreening_breakdown.collocation.spectral1d.solve_newton"
-                if solver == "collocation" else "overscreening_breakdown.solvers.solve_newton")
+        return "overscreening_breakdown.continuation.solve_newton"
 
     def assert_native_diagnostics(self, solution):
         arithmetic = solution.arithmetic

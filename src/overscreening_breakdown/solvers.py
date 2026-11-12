@@ -11,7 +11,7 @@ from overscreening_breakdown.collocation.adapter import CollocationProblemAdapte
 from overscreening_breakdown.collocation.solution import CollocationSolution
 from overscreening_breakdown.galerkin.basis import GalerkinBasis
 from overscreening_breakdown.galerkin.assembly import GalerkinAssembly
-from overscreening_breakdown.nonlinear_solver import solve_newton
+from overscreening_breakdown.continuation import ContinuationOptions, solve_continuation
 from overscreening_breakdown.problems.flux import BoundFluxProblem
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.galerkin.solution import GalerkinSolution
@@ -122,12 +122,19 @@ def _owned_newton_result(result, arithmetic, coefficients):
                               gradient_norm=(None if record.gradient_norm is None
                                              else scalar(record.gradient_norm)))
                       for record in result.history),
+        reference_result=(None if result.reference_result is None else replace(
+            result.reference_result,
+            state=arithmetic.vector(result.reference_result.state),
+            residual_norm=scalar(result.reference_result.residual_norm),
+            target_norm=scalar(result.reference_result.target_norm),
+            strength=scalar(result.reference_result.strength),
+        )),
     )
 
 
 def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=50,
           method="newton", tolerance="1e-10", initial_guess=None,
-          max_iterations=50, use_globalization=True, globalization_init="1",
+          max_iterations=50, use_globalization=True, continuation=None,
           quadrature_order=None, subdivisions=1, quadrature_atol=None,
           quadrature_rtol=None, max_refinements=3, verbosity=0,
           initializer=None, initializer_tolerance="0.1", initializer_max_evaluations=200,
@@ -155,6 +162,11 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
     ``newton_fallback='adjoint'`` enables native merit descent after a failed
     Newton step, with at most ``adjoint_max_steps`` accepted recoveries per stage.
     ``use_globalization`` controls homotopy; Newton backtracking remains active.
+    Optional ``ContinuationOptions`` configure the verified screened-linear
+    reference and adaptive stepping. ``max_iterations`` applies per Newton
+    stage; continuation options bound total Newton work and rejected stages,
+    shared across Galerkin quadrature refinements. Physical callbacks remain
+    independent of continuation and discretization normalization.
 
     ``verbosity`` selects quiet (0), phase summaries (1), iteration/evaluation
     progress (2), or detailed trials (3). ``progress_callback(event)`` receives
@@ -172,7 +184,7 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
             problem, N, solver=solver, L=L, use_mpmath=use_mpmath, precision=precision,
             method=method, tolerance=tolerance, initial_guess=initial_guess,
             max_iterations=max_iterations, use_globalization=use_globalization,
-            globalization_init=globalization_init, quadrature_order=quadrature_order,
+            continuation=continuation, quadrature_order=quadrature_order,
             subdivisions=subdivisions, quadrature_atol=quadrature_atol,
             quadrature_rtol=quadrature_rtol, max_refinements=max_refinements,
             initializer=initializer, initializer_tolerance=initializer_tolerance,
@@ -208,7 +220,7 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
 
 
 def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
-           initial_guess, max_iterations, use_globalization, globalization_init,
+           initial_guess, max_iterations, use_globalization, continuation,
            quadrature_order, subdivisions, quadrature_atol, quadrature_rtol,
            max_refinements, initializer, initializer_tolerance,
            initializer_max_evaluations, newton_fallback, adjoint_max_steps, progress):
@@ -235,6 +247,11 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
             or max_iterations < 0):
         raise ValueError("max_iterations must be a nonnegative integer")
     arithmetic = MpmathArithmetic(precision) if use_mpmath else NumpyArithmetic()
+    if continuation is None:
+        continuation = ContinuationOptions()
+    if not isinstance(continuation, ContinuationOptions):
+        raise TypeError("continuation must be ContinuationOptions or None")
+    continuation = continuation.bind(arithmetic.scalar, arithmetic.isfinite)
     # Set the formatter's owner once, before the first numerical event.
     progress.arithmetic = arithmetic
     tolerance = arithmetic.scalar(tolerance)
@@ -272,7 +289,7 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
                 int(N), problem=adapter, L=arithmetic.scalar(L), use_mpmath=use_mpmath,
                 prec=precision, use_method=method, tolerance=tolerance,
                 total_iterations=max_iterations, use_globalization=use_globalization,
-                globalization_init=arithmetic.scalar(globalization_init),
+                continuation=continuation,
                 initializer=initializer, initializer_tolerance=initializer_tolerance,
                 initializer_max_evaluations=int(initializer_max_evaluations),
                 newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
@@ -326,15 +343,24 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
         raise ValueError("quadrature tolerances must be finite and nonnegative")
     history = []
     checked = False
+    used_iterations = used_stages = 0
     for refinement in range(int(max_refinements)+1):
-        result = solve_newton(
-            assembly.nonlinear_system(initial_guess), atol=tolerance, rtol=0,
+        remaining = replace(
+            continuation,
+            max_total_iterations=continuation.max_total_iterations-used_iterations,
+            max_stages=continuation.max_stages-used_stages,
+        )
+        result = solve_continuation(
+            assembly.nonlinear_system(initial_guess),
+            reference_factory=assembly.reference_operator,
+            options=remaining, atol=tolerance, rtol=0,
             max_iterations=max_iterations, use_globalization=use_globalization,
-            globalization_init=globalization_init,
             newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
             progress=progress.bind(refinement=refinement, order=assembly.plan.order,
                                    subdivisions=assembly.plan.subdivisions),
         )
+        used_iterations += result.iterations
+        used_stages += result.continuation_attempts
         if not result.converged:
             history.append(QuadratureIteration(assembly.plan.order, assembly.plan.subdivisions,
                                                False, False, reason=result.reason,

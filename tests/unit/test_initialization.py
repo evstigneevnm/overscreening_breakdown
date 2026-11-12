@@ -53,7 +53,7 @@ class InitializationTests(unittest.TestCase):
             initial = initialize_fsolve(system, np.array([1.0]))
         self.assertTrue(initial.scipy_success and initial.accepted)
         result = solve_newton(replace(system, initial_guess=lambda: initial.state.copy()),
-                              max_iterations=0, use_globalization=False, atol="1e-12")
+                              max_iterations=0, atol="1e-12")
         self.assertFalse(result.converged)
         self.assertGreater(result.residual_norm, 0.1)
 

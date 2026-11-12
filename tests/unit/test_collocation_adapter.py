@@ -31,16 +31,15 @@ class CollocationAdapterTests(unittest.TestCase):
     def adapter(self, arithmetic, **options):
         return CollocationProblemAdapter(self.description(**options).bind(arithmetic))
 
-    def test_normalization_and_homotopy_in_all_precisions(self):
+    def test_physical_normalization_in_all_precisions(self):
         for arithmetic in self.arithmetics():
             with self.subTest(backend=arithmetic.backend, dps=arithmetic.dps):
                 adapter = self.adapter(arithmetic)
-                x, u, q = map(arithmetic.scalar, ("0.5", "0.25", "0.3"))
+                x, u = map(arithmetic.scalar, ("0.5", "0.25"))
                 scale = arithmetic.scalar(1)/4
-                damping = arithmetic.exp(-q*x)
                 self.assertEqual(adapter.left_hand_side(), [None, None, scale, None, -1])
-                self.assertEqual(adapter.right_hand_side(x, u, q), scale*damping*(arithmetic.exp(-x)+u**3))
-                self.assertEqual(adapter.right_hand_side_linearization(x, u, q), scale*damping*(3*u**2))
+                self.assertEqual(adapter.right_hand_side(x, u), scale*(arithmetic.exp(-x)+u**3))
+                self.assertEqual(adapter.right_hand_side_linearization(x, u), scale*(3*u**2))
                 self.assertEqual(adapter.physical.delta, 2)
 
     def test_second_order_problem_is_not_divided_by_delta(self):
@@ -51,7 +50,7 @@ class CollocationAdapterTests(unittest.TestCase):
                 self.assertEqual(adapter.left_hand_side(), [None, None, 1, None, 0])
                 self.assertEqual(adapter.right_hand_side(0, 2), 9)
                 self.assertEqual(adapter.right_hand_side_linearization(0, 2), 12)
-                self.assertEqual(adapter.right_hand_side(1, 0, 1), arithmetic.exp(-arithmetic.scalar(1))**2)
+                self.assertEqual(adapter.right_hand_side(1, 0), arithmetic.exp(-arithmetic.scalar(1)))
 
     def test_scalar_callbacks_are_broadcast_without_dtype_inference(self):
         for arithmetic in (NumpyArithmetic(), MpmathArithmetic(50)):
@@ -108,13 +107,13 @@ class CollocationAdapterTests(unittest.TestCase):
             source = adapter.right_hand_side("0.5", "0.25")
             self.assertIsInstance(source, arithmetic.context.mpf if arithmetic.use_mpmath else np.float64)
 
-    def test_homotopy_parameter_validation(self):
+    def test_physical_callbacks_reject_artificial_parameters(self):
         for arithmetic in (NumpyArithmetic(), MpmathArithmetic(50)):
             adapter = self.adapter(arithmetic)
-            for invalid in (-1, "nan", "inf", "-inf"):
+            for invalid in (-1, "0.25", 1, "nan", "inf", "-inf"):
                 with self.subTest(backend=arithmetic.backend, invalid=invalid):
                     for callback in (adapter.right_hand_side, adapter.right_hand_side_linearization):
-                        with self.assertRaisesRegex(ValueError, "q must be finite and nonnegative"):
+                        with self.assertRaisesRegex(ValueError, "physical source callbacks require q=0"):
                             callback(1, 2, invalid)
             for invalid in ([1], 1j):
                 with self.assertRaises(TypeError):

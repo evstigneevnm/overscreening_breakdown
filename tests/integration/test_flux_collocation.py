@@ -15,6 +15,7 @@ import numpy as np
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic
 from overscreening_breakdown.coefficients import Coefficient
+from overscreening_breakdown.continuation import AffineReference, ResidualHomotopy
 from overscreening_breakdown.problems.flux import FluxProblem
 from overscreening_breakdown.collocation.spectral1d import solve_nonlinear_problem
 from overscreening_breakdown.manufactured import rational_case, polynomial_segment_case
@@ -195,8 +196,11 @@ class FluxCollocationTests(unittest.TestCase):
                 direction_values = [scalar(k+1)/scalar(len(state)) for k in range(len(state))]
                 direction = mp.matrix(direction_values) if use_mpmath else np.array(direction_values)
                 state = state+scalar("0.03")*direction
-                residual = solver._solve_nonlinear_problem__residual_operator
-                jacobian = solver._solve_nonlinear_problem__linearization_operator
+                system = solver.nonlinear_system(state)
+                reference_matrix, offset = solver.reference_operator()
+                reference = AffineReference(reference_matrix, offset, system)
+                path = ResidualHomotopy(system, reference)
+                residual, jacobian = path.residual, path.jacobian
                 step = scalar("1e-15" if use_mpmath else "1e-5")
                 q = scalar("0.7")
                 difference = (residual(state+step*direction, q)-residual(state-step*direction, q))/(2*step)
@@ -205,6 +209,9 @@ class FluxCollocationTests(unittest.TestCase):
                 norm = mp.norm if use_mpmath else np.linalg.norm
                 error = norm(difference-product)/max(scalar(1), norm(product))
                 self.assertLess(error, scalar("1e-27" if use_mpmath else "1e-7"))
+                self.assertEqual(norm(residual(state, 0)-system.residual(state, 0)), 0)
+                self.assertGreater(norm(residual(state, q)-residual(state, 0)), 0)
+                self.assertGreater(norm(matrix-jacobian(state, 0)), 0)
 
     def test_globalization_option_reaches_the_physical_problem(self):
         for use_mpmath in (False, True):

@@ -114,12 +114,14 @@ class ScipySolverTests(unittest.TestCase):
                     method="newton", use_mpmath=use_mpmath,
                     use_globalization=True,
                 )
-                restarts = []
+                continuation_starts = []
+                failed = False
 
                 def force_one_linear_failure(system, **options):
+                    nonlocal failed
                     native_solve = system.solve_linear
-                    native_restart = system.restart
-                    failed = False
+                    if options.get("parameter", 0) > 0:
+                        continuation_starts.append(system.initial_guess().copy())
 
                     def solve_linear(matrix, rhs):
                         nonlocal failed
@@ -128,20 +130,14 @@ class ScipySolverTests(unittest.TestCase):
                             raise LinearSolveError("exercise continuation")
                         return native_solve(matrix, rhs)
 
-                    def restart(state, q):
-                        coefficients = native_restart(state, q)
-                        restarts.append(coefficients.copy())
-                        return coefficients
-
                     # Force recovery without relying on a fragile difficult
                     # spatial problem; all later systems use the real assembly.
-                    options["homotopy_cutoff"] = "0.1"
                     return solve_newton(
-                        replace(system, solve_linear=solve_linear, restart=restart),
+                        replace(system, solve_linear=solve_linear),
                         **options,
                     )
 
-                with patch("overscreening_breakdown.collocation.spectral1d.solve_newton", side_effect=force_one_linear_failure):
+                with patch("overscreening_breakdown.continuation.solve_newton", side_effect=force_one_linear_failure):
                     coefficients = solver.solve_problem()
                 result = solver.get_newton_result()
                 self.assertTrue(solver.is_converged())
@@ -149,9 +145,10 @@ class ScipySolverTests(unittest.TestCase):
                 self.assertEqual(result.stages[-1].homotopy, 0)
                 self.assertTrue(result.stages[-1].converged)
                 self.assertTrue(any(stage.homotopy > 0 for stage in result.stages))
-                self.assertTrue(restarts)
+                self.assertTrue(result.reference_result.converged)
+                self.assertTrue(continuation_starts)
                 self.assertLess(solver.residual_L2_norm(coefficients), 1e-9)
-                for restart in restarts:
+                for restart in (result.reference_result.state, *continuation_starts):
                     wall_value = np.asarray(solver.obtain_solution_in_domain(
                         restart, np.array([0.0])
                     )).item()

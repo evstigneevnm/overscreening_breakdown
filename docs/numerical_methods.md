@@ -5,8 +5,9 @@
 `BSKProblem` is an immutable physical description with explicit sigma, mu,
 gamma, delta, epsilon, domain, boundary conditions, and optional scalar initial
 guess. Bind it to solver-owned arithmetic to evaluate `physical_rhs(x, u)`
-and `physical_rhs_u(x, u)`, the unscaled source and its analytic derivative
-without homotopy damping. The model's Gaussian normalization is preserved.
+and `physical_rhs_u(x, u)`, the unscaled source and its analytic derivative.
+Physical callbacks never take a continuation parameter. The model's Gaussian
+normalization is preserved.
 
 Bind a snapshot of a problem to arithmetic owned by its eventual solver:
 
@@ -53,7 +54,7 @@ responsibility when adapted to a bound BSK problem.
 `solve_nonlinear_problem` accepts an unbound `FluxProblem` directly when epsilon
 is explicitly constant 1. It binds the description using the solver's backend
 and precision, then adapts the physical callbacks to collocation's existing
-normalization and homotopy. Both the constructor and `set_problem()` perform
+normalization. Both the constructor and `set_problem()` perform
 this preparation. Each solver receives its own view; the description is not
 modified. Pass the original description rather than an already bound snapshot,
 which could contain values rounded at another precision.
@@ -169,23 +170,22 @@ owner, mapping length, and exact precision. The plan must have at least `N+1`
 points per panel and split every declared epsilon interface; extra splits are
 allowed.
 
-Write `epsilon_b=epsilon(0+)`, `e=epsilon/epsilon_b`, and
-`f_q(x,u)=exp(-q*x)*f(x,u)`. With all pairings integrated in physical `dx`, the
-assembled residual represents
+Write `epsilon_b=epsilon(0+)` and `e=epsilon/epsilon_b`. With all pairings
+integrated in physical `dx`, the assembled physical residual represents
 
 \[
 \begin{aligned}
   (u',\phi')-(w,\phi)&=0,\\
   \delta^2(ew',\psi')+((e-1)u',\psi')+(w,\psi)
-    +\epsilon_b^{-1}(f_q(\cdot,u),\psi)
+    +\epsilon_b^{-1}(f(\cdot,u),\psi)
     -\delta^2q_b\psi(0)&=0.
 \end{aligned}
 \]
 
 Only the second equation is normalized by `epsilon_b`. The physical source is
-not divided by `delta**2`. The homotopy parameter `q` damps `f` and `f_u`
-identically and leaves the coefficient, lift, and natural wall load unchanged;
-`q=0` is the physical problem. No derivative of epsilon is needed.
+not divided by `delta**2`. This assembly evaluates the original problem;
+reference continuation blends complete endpoint residuals separately. No
+derivative of epsilon is needed.
 
 This assembly supports `[0,infinity)`, positive `delta`, and the wall data
 `u(0)=u_b`, `u'''(0)=q_b`, with no other wall conditions. An optional explicit
@@ -197,9 +197,13 @@ smooth-variable, and declared piecewise-smooth epsilon descriptions are accepted
 Constant differential blocks, lift contributions, and the wall load are cached.
 `linear_matrix`, `lift_vector`, `boundary_vector`, and `affine_vector` return
 native copies. `linear_matrix` excludes the physical source; use
-`jacobian(coefficients, q)` for the complete derivative, including `f_u`.
-`residual(coefficients, q)` and `jacobian` use the coefficient order documented
-above and the Newton convention `DR*step=-R`.
+`jacobian(coefficients)` for the complete derivative, including `f_u`.
+`residual(coefficients)` and `jacobian` use the coefficient order documented
+above and the Newton convention `DR*step=-R`. Their optional low-level `q`
+argument accepts only zero; nonzero parameters belong to the continuation
+adapter. `reference_operator(strength="1")` returns native matrix and affine
+load copies for the screened linear reference, including both fields and the
+full lift, without evaluating the physical source callbacks.
 
 For example, the same physical problem used by the collocation example can
 supply a small mixed system:
@@ -220,8 +224,8 @@ result = solve_newton(assembly.nonlinear_system(), atol="1e-35")
 u, w = basis.evaluate_fields(result.state, y=0, u_b="1")
 ```
 
-`nonlinear_system(initial_guess=None)` supplies callbacks to the shared Newton
-driver. Its default mixed vector is zero, meaning `u=wall_lift` and `w=0`.
+`nonlinear_system(initial_guess=None)` supplies callbacks to the shared fixed-stage
+Newton driver. Its default mixed vector is zero, meaning `u=wall_lift` and `w=0`.
 An explicit guess must contain all `2*N-1` mixed coefficients. This low-level
 interface does not project the problem's scalar initial guess or construct
 `w` by differentiating it. Nonlinear trial overflow is reported to the shared
@@ -231,9 +235,9 @@ propagate.
 `with_plan(new_plan)` and `refined(order_factor=2, subdivisions_factor=1)`
 create a new assembly while retaining the same bound physical snapshot and
 basis. The previous coefficient vector can initialize its Newton solve.
-`check_refinement(coefficients, atol=..., rtol=..., q=0)` compares the residual
-and analytic Jacobian on the current and refined plans at the same state and
-homotopy parameter. Its two thresholds are `atol+rtol*norm(refined_value)`;
+`check_refinement(coefficients, atol=..., rtol=...)` compares the physical residual
+and analytic Jacobian on the current and refined plans at the same state.
+Its two thresholds are `atol+rtol*norm(refined_value)`;
 both comparisons must pass. Residuals use an **algebraic Euclidean norm** and
 Jacobians an **algebraic Frobenius norm**. These diagnostics are separate from
 physical field errors and nonlinear convergence, and are not rigorous
@@ -417,9 +421,112 @@ overflow in the solver. Quiet reporting does not suppress user-callback
 output, ordinary warnings or exceptions, and does not replace process-wide
 `sys.stdout` or configure global logging handlers.
 
+Reference assembly and factorization have separate phases; reference completion
+reports its residual verification. Continuation reports accepted and rejected parameter
+attempts, including rollback to the last accepted state. Newton iteration
+labels continue across stages; the parameter remains fixed during each stage's
+Newton, backtracking, and adjoint work.
+
 Benchmark command lines accept `--verbosity 0` through `--verbosity 3` and
 default to 0. Enabled solver text streams during each run and is also retained
 in its `solver_log` result field.
+
+### Reference continuation
+
+`use_globalization=True` first tries the physical problem using the supplied
+initial guess and optional initializer. If that Newton solve fails, the solver
+builds and verifies a screened linear reference solution in its own basis and
+arithmetic. The default reference keeps the domain, mapping, delta, and boundary
+data. Collocation uses epsilon one. Galerkin uses constant
+`epsilon_ref=epsilon_b` and `f_ref=epsilon_b*strength*u`, with `strength="1"`
+by default. In the normalized mixed equation its coefficients are `e=1` and
+`c=strength`. Both Galerkin fields are solved together; the wall lift and
+natural wall load are included.
+
+The shared continuation adapter blends complete discrete endpoint residuals:
+
+\[
+H(z,q)=(1-q)R_{\rm physical}(z)+qR_{\rm ref}(z),\qquad
+D_zH=(1-q)DR_{\rm physical}+qA_{\rm ref},\quad 0\le q\le1.
+\]
+
+`R_ref(z)=A_ref*z+d_ref` is affine. At `q=1`, only the reference endpoint is
+evaluated; at `q=0`, only the physical endpoint is evaluated. For Galerkin,
+this corresponds to blending epsilon toward its constant wall trace and the
+source toward `epsilon_b*strength*u`. The physical interface locations, wall
+trace, basis, and boundary data remain fixed. The first mixed equation is
+unchanged. Intermediate equations are artificial continuation problems;
+the original physical problem remains the final target and saved description.
+
+The path starts from the verified reference state at `q=1` and decreases toward
+zero. Each successful stage supplies the next initial state. After a failed
+stage the solver restores the last accepted parameter and state and halves
+the attempted decrement. Successful stages grow the decrement up to its
+configured maximum. The final `q=0` state is checked again with the original
+physical residual. A successful positive-parameter stage cannot certify
+physical convergence.
+
+```python
+from overscreening_breakdown import ContinuationOptions, ScreenedLinearReference, solve
+
+options = ContinuationOptions(
+    reference=ScreenedLinearReference(strength="1"),
+    initial_step="0.25", min_step="1e-6", max_step="0.5", growth="1.5",
+    max_stages=100, max_total_iterations=1000,
+)
+solution = solve(problem, 8, use_globalization=True, continuation=options,
+                 max_iterations=20, verbosity=2)
+```
+
+`continuation=None` selects these defaults. `max_iterations` bounds attempted
+Newton steps **per stage**. `max_stages` bounds continuation attempts, including
+rejected stages; the initial physical attempt is additional.
+`max_total_iterations` bounds Newton attempts across the initial physical solve
+and all continuation attempts. Both aggregate limits also span Galerkin's
+quadrature refinements; changing the plan does not replenish them. Reference
+construction uses a separate linear solve, with at most
+`max_reference_corrections=3` native iterative-refinement corrections if the
+first solve does not satisfy the reference residual target. Only improving
+corrections are retained; the target is never relaxed. Galerkin's outer refinement has its
+separate `max_refinements` limit. `max_total_iterations=0` permits residual
+verification without Newton steps; `max_stages=0` disables continuation attempts. Set
+`use_globalization=False` for a single physical Newton stage. The former
+`globalization_init` keyword is removed.
+
+`newton_result.reference_result` reports the reference's state, residual,
+acceptance target, strength, outcome, and `linear_solves` count. It is `None` when reference recovery
+was not needed or construction failed before producing a record.
+`continuation_attempts` counts accepted and rejected parameter
+attempts. A reference construction failure, exhausted budget, or minimum
+parameter step leaves the result unconverged. An invertible reference does not
+guarantee that an arbitrary nonlinear continuation path remains regular.
+Quadrature consistency and spatial accuracy require their own checks.
+
+User-defined source classes retain the ordinary physical callback contract;
+they need no globalized right-hand-side method or solver-specific branch:
+
+```python
+from overscreening_breakdown import FluxProblem
+
+class CubicSource:
+    def __call__(self, x, u, arithmetic):
+        return u + arithmetic.scalar("0.1")*u**3
+
+    def derivative(self, x, u, arithmetic):
+        return 1 + arithmetic.scalar("0.3")*u**2
+
+source = CubicSource()
+problem = FluxProblem(
+    delta="2", f=source, f_u=source.derivative,
+    boundary_conditions=(("1", None, None, "0", None), ("0", None, None, None, None)),
+)
+```
+
+The discretization assembles the physical residual and its reference. The
+shared adapter supplies the parameterized residual and Jacobian to the shared
+controller. All operations, including parameter values and reference solves,
+use the selected native arithmetic. Existing custom descriptions implementing
+`bind(arithmetic)` keep that same physical interface.
 
 ### Newton recovery and initialization
 
@@ -478,7 +585,8 @@ adjoint is a discrete Jacobian-transpose operation, not a continuous adjoint
 PDE or an assertion of physical-error reduction.
 
 `adjoint_max_steps` bounds accepted recovery steps separately for each fixed
-homotopy stage. `use_globalization` continues to control homotopy independently;
+homotopy stage. The merit gradient uses that stage's complete blended residual
+and Jacobian. `use_globalization` controls reference continuation independently;
 an accepted recovery step does not change `q`. No fallback step alone establishes
 convergence: the ordinary residual acceptance test, final `q=0` check, and
 Galerkin quadrature check remain necessary.
@@ -548,14 +656,12 @@ physical flux continuity in the manufactured reference; a global finite-N
 approximation should be assessed with weak residuals and flux L2 error rather
 than exact pointwise transmission at the jump.
 
-The native catalog retains the physical equations at `q=0` and evaluates
-constants using the supplied arithmetic. This corrects historical rounded
-decimal/trigonometric boundary literals and binary-float fractions. The common
-homotopy damps the entire physical source. In historical nonlinear cases 2 and
-3, the old implementation damped only the reaction contribution; the final
-`q=0` equation agrees, while the continuation path follows the existing common
-solver convention. A native source is not a wrapper around a mutable legacy
-problem object.
+The native catalog retains the physical equations and evaluates constants using
+the supplied arithmetic. This corrects historical rounded decimal/trigonometric
+boundary literals and binary-float fractions. Reference continuation blends the
+complete residual with a screened linear reference; it no longer multiplies
+the source by `exp(-q*x)`. Historical source-damping paths are not retained.
+A native source is not a wrapper around a mutable legacy problem object.
 
 `case.legacy_problem()` explicitly returns a fresh historical class where
 available, including its original constants and normalization. Linear case 8

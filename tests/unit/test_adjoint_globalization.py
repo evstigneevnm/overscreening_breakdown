@@ -51,14 +51,14 @@ class AdjointGlobalizationTests(unittest.TestCase):
                     initial_guess=lambda: a.vector(["0.5", "0.5"]),
                     scalar=a.scalar, isfinite=a.isfinite,
                 )
-                original = solve_newton(system, atol=self.tolerance(a), use_globalization=False)
+                original = solve_newton(system, atol=self.tolerance(a))
                 self.assertFalse(original.converged)
                 self.assertEqual(original.reason, "linear_solve_failed")
                 callbacks = []
                 def observer(state, record):
                     callbacks.append((state.copy(), record))
                     state[0] = a.scalar(999)  # observer cannot mutate accepted state
-                result = solve_newton(system, atol=self.tolerance(a), use_globalization=False,
+                result = solve_newton(system, atol=self.tolerance(a),
                                       newton_fallback="adjoint", callback=observer)
                 self.assertTrue(result.converged, result.reason)
                 self.assertEqual(result.homotopy, 0)
@@ -131,8 +131,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
                 a, residual=lambda z, q: a.vector([z[0]**2+1]),
                 jacobian=lambda z, q: a.matrix([[2*z[0]]]),
             )
-            result = solve_newton(system, atol=self.tolerance(a), newton_fallback="adjoint",
-                                  use_globalization=False)
+            result = solve_newton(system, atol=self.tolerance(a), newton_fallback="adjoint")
             self.assertFalse(result.converged)
             self.assertEqual(result.reason, "adjoint_stationary")
             self.assertEqual(result.residual_norm, 1)
@@ -145,7 +144,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
             system = self.scalar_system(a, solve_linear=self.fail_linear,
                                         adjoint_direction=lambda g: -g/4)
             result = solve_newton(system, newton_fallback="adjoint", adjoint_max_steps=2,
-                                  max_iterations=50, use_globalization=False)
+                                  max_iterations=50)
             self.assertFalse(result.converged)
             self.assertEqual(result.reason, "adjoint_budget_exhausted")
             self.assertEqual(result.iterations, 3)
@@ -154,13 +153,6 @@ class AdjointGlobalizationTests(unittest.TestCase):
             self.assertEqual(result.state[0], a.scalar("0.4375"))
             self.assertEqual(len(result.history), 2)
             self.assertTrue(all(record.kind == "adjoint" for record in result.history))
-            continued = solve_newton(system, newton_fallback="adjoint", adjoint_max_steps=2,
-                                     max_stages=3, use_globalization=True)
-            self.assertFalse(continued.converged)
-            self.assertEqual(continued.reason, "max_stages")
-            self.assertEqual(continued.adjoint_steps, 6)
-            self.assertEqual(continued.adjoint_evaluations, 6)
-            self.assertTrue(all(stage.adjoint_steps == 2 for stage in continued.stages))
 
     def test_nonfinite_steps_and_failed_newton_search_can_recover(self):
         for a in (NumpyArithmetic(), MpmathArithmetic(30)):
@@ -169,8 +161,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
                     callback = ((lambda matrix, rhs: a.vector([a.scalar("nan")]))
                                 if trigger == "nonfinite_step" else lambda matrix, rhs: -rhs)
                     system = self.scalar_system(a, solve_linear=callback)
-                    result = solve_newton(system, newton_fallback="adjoint", max_backtracks=4,
-                                          use_globalization=False)
+                    result = solve_newton(system, newton_fallback="adjoint", max_backtracks=4)
                     self.assertTrue(result.converged)
                     self.assertEqual(result.adjoint_steps, 1)
                     self.assertEqual(result.history[0].recovery_reason, trigger)
@@ -181,7 +172,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
                 matrix[0, 0] = a.scalar("nan")
                 return self.fail_linear(matrix, rhs)
             system = self.scalar_system(a, solve_linear=destroy)
-            result = solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+            result = solve_newton(system, newton_fallback="adjoint")
             self.assertTrue(result.converged, result.reason)
             self.assertEqual(result.adjoint_steps, 1)
             self.assertEqual(result.state[0], 1)
@@ -204,7 +195,6 @@ class AdjointGlobalizationTests(unittest.TestCase):
                                         jacobian=lambda z, q: a.matrix([[1/z[0]]]), solve_linear=solve)
             accepted = []
             result = solve_newton(system, newton_fallback="adjoint", atol=self.tolerance(a),
-                                  use_globalization=False,
                                   callback=lambda z, record: accepted.append(z[0]))
             self.assertTrue(result.converged, result.reason)
             self.assertTrue(rejected)
@@ -224,7 +214,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
         for callbacks, reason in variants:
             with self.subTest(reason=reason):
                 system = self.scalar_system(a, solve_linear=self.fail_linear, **callbacks)
-                result = solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+                result = solve_newton(system, newton_fallback="adjoint")
                 self.assertFalse(result.converged)
                 self.assertEqual(result.reason, reason)
                 self.assertEqual(result.history, ())
@@ -238,7 +228,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
             system = self.scalar_system(a, merit_gradient=forbidden)
             system = replace(system, **{part: lambda z, q: a.vector([a.inf])
                                        if part == "residual" else a.matrix([[a.inf]])})
-            result = solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+            result = solve_newton(system, newton_fallback="adjoint")
             self.assertFalse(result.converged)
             self.assertEqual(result.reason, reason)
             self.assertEqual(result.adjoint_steps, 0)
@@ -248,8 +238,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
             system = self.scalar_system(a, residual=lambda z, q: a.vector([100*z[0]-1]),
                                         jacobian=lambda z, q: a.matrix([[100]]),
                                         solve_linear=self.fail_linear)
-            result = solve_newton(system, newton_fallback="adjoint", max_backtracks=1,
-                                  use_globalization=False)
+            result = solve_newton(system, newton_fallback="adjoint", max_backtracks=1)
             self.assertFalse(result.converged)
             self.assertEqual(result.reason, "adjoint_line_search_failed")
             self.assertEqual(result.adjoint_steps, 0)
@@ -263,15 +252,13 @@ class AdjointGlobalizationTests(unittest.TestCase):
         for initial, converged in ((1, True), (0, False)):
             system = self.scalar_system(a, initial=initial, jacobian=forbidden,
                                         merit_gradient=forbidden)
-            result = solve_newton(system, max_iterations=0, newton_fallback="adjoint",
-                                  use_globalization=False)
+            result = solve_newton(system, max_iterations=0, newton_fallback="adjoint")
             self.assertEqual(result.converged, converged)
             self.assertEqual(result.iterations, 0)
             self.assertEqual(result.adjoint_steps, 0)
             self.assertEqual(result.adjoint_evaluations, 0)
         system = self.scalar_system(a, solve_linear=self.fail_linear, adjoint_direction=lambda g: -g/4)
-        result = solve_newton(system, max_iterations=1, newton_fallback="adjoint",
-                              use_globalization=False)
+        result = solve_newton(system, max_iterations=1, newton_fallback="adjoint")
         self.assertFalse(result.converged)
         self.assertEqual(result.reason, "max_iterations")
         self.assertEqual(result.iterations, 1)
@@ -282,7 +269,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
         def forbidden(*args):
             raise AssertionError("disabled fallback hook was called")
         system = self.scalar_system(a, merit_gradient=forbidden, dot=forbidden, adjoint_direction=forbidden)
-        result = solve_newton(system, use_globalization=False)
+        result = solve_newton(system)
         self.assertTrue(result.converged)
         self.assertEqual(result.adjoint_steps, 0)
         self.assertEqual(result.adjoint_evaluations, 0)
@@ -296,7 +283,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
         target = 1+a.scalar("1e-80")
         system = self.scalar_system(a, initial=1, residual=lambda z, q: a.vector([z[0]-target]),
                                     solve_linear=self.fail_linear)
-        result = solve_newton(system, atol="1e-110", newton_fallback="adjoint", use_globalization=False)
+        result = solve_newton(system, atol="1e-110", newton_fallback="adjoint")
         self.assertTrue(result.converged)
         self.assertEqual(result.state[0], target)
         self.assertEqual(result.adjoint_steps, 1)
@@ -309,45 +296,51 @@ class AdjointGlobalizationTests(unittest.TestCase):
                                     jacobian=lambda z, q: a.matrix([["1e150"]]),
                                     solve_linear=self.fail_linear)
         with np.errstate(over="raise", invalid="raise"):
-            result = solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+            result = solve_newton(system, newton_fallback="adjoint")
         self.assertTrue(result.converged)
         self.assertEqual(result.state[0], 1)
         self.assertTrue(a.isfinite(result.history[0].gradient_norm))
 
-    def test_recovery_keeps_q_fixed_and_continuation_verifies_final_zero(self):
+    def test_recovery_keeps_the_parameter_fixed_and_preserves_stage_labels(self):
         for a in (NumpyArithmetic(), MpmathArithmetic(30)):
-            seen = set()
-            current_q = [a.scalar(0)]
+            parameter = a.scalar("0.75")
+            parameters, attempts = [], []
+
             def residual(z, q):
-                current_q[0] = q
+                parameters.append(q)
                 return a.vector([z[0]**2+q*z[0]-1])
+
             def solve(matrix, rhs):
-                q = current_q[0]
-                if q > 0 and q not in seen:
-                    seen.add(q)
+                attempts.append(1)
+                if len(attempts) == 1:
                     return self.fail_linear(matrix, rhs)
                 return self.linear_solve(a)(matrix, rhs)
-            system = self.scalar_system(a, residual=residual,
-                                        jacobian=lambda z, q: a.matrix([[2*z[0]+q]]), solve_linear=solve,
-                                        restart=lambda state, q: a.vector([0]))
+
+            system = self.scalar_system(
+                a, residual=residual,
+                jacobian=lambda z, q: a.matrix([[2*z[0]+q]]), solve_linear=solve,
+            )
             observed = []
-            result = solve_newton(system, atol=self.tolerance(a), newton_fallback="adjoint",
-                                  max_stages=10, homotopy_cutoff="0.2",
-                                  callback=lambda z, record: observed.append((z.copy(), record)))
+            result = solve_newton(
+                system, parameter=parameter, stage=3, iteration_offset=10,
+                atol=self.tolerance(a), newton_fallback="adjoint",
+                callback=lambda z, record: observed.append((z.copy(), record)),
+            )
             self.assertTrue(result.converged, result.reason)
-            self.assertEqual(result.homotopy, 0)
-            self.assertEqual(result.stages[0].reason, "adjoint_stationary")
-            self.assertFalse(result.stages[0].converged)
-            self.assertTrue(result.stages[-1].converged)
-            self.assertEqual(result.stages[-1].homotopy, 0)
-            self.assertGreater(result.adjoint_steps, 0)
+            self.assertEqual(result.homotopy, parameter)
+            self.assertEqual(result.adjoint_steps, 1)
+            self.assertEqual(len(result.stages), 1)
+            self.assertEqual(result.history[0].kind, "adjoint")
+            self.assertEqual(result.history[0].iteration, 11)
             for state, record in observed:
-                actual = a.norm(residual(state, record.homotopy))
+                actual = a.norm(residual(state, parameter))
                 self.assertLess(abs(actual-record.residual_norm), 10*self.tolerance(a))
-                self.assertEqual(record.homotopy, result.stages[record.stage-1].homotopy)
-            self.assertEqual(result.adjoint_steps, sum(stage.adjoint_steps for stage in result.stages))
+                self.assertEqual(record.homotopy, parameter)
+                self.assertEqual(record.stage, 3)
+            self.assertTrue(all(q == parameter for q in parameters))
+            self.assertEqual(result.adjoint_steps, result.stages[0].adjoint_steps)
             self.assertEqual(result.adjoint_evaluations,
-                             sum(stage.adjoint_evaluations for stage in result.stages))
+                             result.stages[0].adjoint_evaluations)
 
     def test_programming_errors_in_new_callbacks_propagate(self):
         a = NumpyArithmetic()
@@ -356,12 +349,12 @@ class AdjointGlobalizationTests(unittest.TestCase):
         for name in ("merit_gradient", "dot", "adjoint_direction"):
             system = self.scalar_system(a, solve_linear=self.fail_linear, **{name: broken})
             with self.subTest(callback=name), self.assertRaisesRegex(RuntimeError, "callback defect"):
-                solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+                solve_newton(system, newton_fallback="adjoint")
         for name in ("merit_gradient", "adjoint_direction"):
             system = self.scalar_system(a, solve_linear=self.fail_linear,
                                         **{name: lambda *args: a.vector([1, 2])})
             with self.subTest(callback=name), self.assertRaises(ValueError):
-                solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+                solve_newton(system, newton_fallback="adjoint")
 
     def test_numerical_direction_errors_and_overflow_fail_without_false_success(self):
         a = MpmathArithmetic(30)
@@ -370,7 +363,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
         for callback, reason in ((overflow, "adjoint_overflow"),
                                  (lambda g: self.fail_linear(None, None), "adjoint_direction_failed")):
             system = self.scalar_system(a, solve_linear=self.fail_linear, adjoint_direction=callback)
-            result = solve_newton(system, newton_fallback="adjoint", use_globalization=False)
+            result = solve_newton(system, newton_fallback="adjoint")
             self.assertFalse(result.converged)
             self.assertEqual(result.reason, reason)
             self.assertEqual(result.adjoint_steps, 0)
@@ -383,8 +376,7 @@ class AdjointGlobalizationTests(unittest.TestCase):
                         {"adjoint_max_steps": 1.5}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 solve_newton(system, **options)
-        result = solve_newton(system, newton_fallback="adjoint", adjoint_max_steps=0,
-                              use_globalization=False)
+        result = solve_newton(system, newton_fallback="adjoint", adjoint_max_steps=0)
         self.assertFalse(result.converged)
         self.assertEqual(result.reason, "adjoint_budget_exhausted")
         self.assertEqual(result.adjoint_evaluations, 0)

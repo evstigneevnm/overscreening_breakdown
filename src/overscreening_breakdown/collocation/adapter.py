@@ -1,8 +1,8 @@
 """Adapt a scalar physical flux problem to the legacy collocation interface.
 
 Only an explicitly constant epsilon=1 is supported.  The physical source is
-unchanged; this adapter supplies the normalization and continuation factor
-used by collocation.  A bound physical view owns its arithmetic, while the
+unchanged; this adapter supplies only the differential normalization
+used by collocation. Continuation wraps assembled residuals separately.  A bound physical view owns its arithmetic, while the
 existing collocation basis still uses its legacy global mpmath context.
 """
 
@@ -103,14 +103,13 @@ class CollocationProblemAdapter:
 
     def _source(self, callback, x, u, q):
         q = self.arithmetic.scalar(q)
-        if not self.arithmetic.isfinite(q) or q < 0:
-            raise ValueError("the homotopy parameter q must be finite and nonnegative")
+        if not self.arithmetic.isfinite(q) or q != 0:
+            raise ValueError("physical source callbacks require q=0; use the continuation wrapper")
         scale = self.left_hand_side()[2]
 
         def evaluate(coordinate, value):
             source = callback(coordinate, value)
-            coordinate = self.arithmetic.scalar(coordinate)
-            return scale * self.arithmetic.exp(-q * coordinate) * source
+            return scale * source
 
         return self._map(evaluate, x, u)
 
