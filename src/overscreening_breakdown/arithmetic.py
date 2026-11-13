@@ -17,6 +17,33 @@ import mpmath as mp
 import numpy as np
 
 
+def arithmetic_signature(arithmetic):
+    """Identify the numerical backend and exact working precision in bits.
+
+    Decimal digits are only a display convention: a one-bit precision change
+    can leave ``context.dps`` unchanged. Each bound object also retains its
+    arithmetic owner; equal signatures alone do not establish shared ownership.
+    """
+    bits = arithmetic.context.prec if arithmetic.use_mpmath else 53
+    return (arithmetic.use_mpmath, arithmetic.backend, bits)
+
+
+def require_precision(arithmetic, signature, *, subject="arithmetic",
+                      rebuild="rebuild the numerical object"):
+    """Reject use of a snapshot at a different backend or bit precision.
+
+    The check never mutates an owner, rebinds rounded inputs, or changes the
+    global mpmath context. Rebuild from the original description to use a new
+    precision; restoring the recorded precision permits the old snapshot again.
+    """
+    current = arithmetic_signature(arithmetic)
+    if current != signature:
+        raise RuntimeError(
+            "{} precision changed (bound at {} bits, current {} bits); {}".format(
+                subject, signature[2], current[2], rebuild)
+        )
+
+
 def _require_real_scalar(value):
     if (np.ndim(value) != 0 or np.iscomplexobj(value)
             or (isinstance(value, Complex) and not isinstance(value, Real))

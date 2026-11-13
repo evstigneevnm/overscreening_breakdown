@@ -7,7 +7,7 @@ The Jacobian is the derivative of the residual: ``J * step = -residual``.
 """
 
 from dataclasses import dataclass
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Callable, Optional
 
 
@@ -17,6 +17,12 @@ class LinearSolveError(ArithmeticError):
 
 @dataclass(frozen=True)
 class NonlinearSystem:
+    """Fixed-system callbacks and an optional owner-specific precision guard.
+
+    Discretizations with cached numerical data supply ``check_precision``.
+    Arithmetic-independent user systems may leave it as None.
+    """
+
     residual: Callable
     jacobian: Callable
     solve_linear: Callable
@@ -28,6 +34,28 @@ class NonlinearSystem:
     merit_gradient: Optional[Callable] = None
     dot: Optional[Callable] = None
     adjoint_direction: Optional[Callable] = None
+    check_precision: Optional[Callable] = None
+
+
+def check_system_precision(system):
+    """Check an owned discretization; generic callable systems may omit it."""
+    guard = getattr(system, "check_precision", None)
+    if guard is not None:
+        guard()
+
+
+def checked_system_call(system, callback, *args, **kwargs):
+    """Keep callback-induced precision changes outside numerical recovery."""
+    check_system_precision(system)
+    try:
+        value = callback(*args, **kwargs)
+    except Exception:
+        # A changed owner must not turn an OverflowError into recoverable
+        # numerical failure. Control exceptions still interrupt immediately.
+        check_system_precision(system)
+        raise
+    check_system_precision(system)
+    return value
 
 
 @dataclass(frozen=True)
@@ -118,6 +146,7 @@ def solve_newton(
     ``progress`` is an internal scalar-event reporter. It is independent of
     the accepted-state callback and never requests additional evaluations.
     """
+    check_system_precision(system)
     for name, value, minimum in (
         ("max_iterations", max_iterations, 0),
         ("stage", stage, 1),
@@ -164,8 +193,8 @@ def solve_newton(
         if not finite_vector(state):
             return None, infinity
         try:
-            residual = system.residual(state, parameter)
-            norm = system.residual_norm(residual)
+            residual = checked_system_call(system, system.residual, state, parameter)
+            norm = checked_system_call(system, system.residual_norm, residual)
         except OverflowError:
             return None, infinity
         if not finite_vector(residual) or not finite(norm):
@@ -174,7 +203,7 @@ def solve_newton(
             raise ValueError("residual_norm must be nonnegative")
         return residual, norm
 
-    state = system.initial_guess().copy()
+    state = checked_system_call(system, system.initial_guess).copy()
     stages, history = [], []
     total_iterations = 0
     total_adjoint_steps = total_adjoint_evaluations = 0
@@ -182,11 +211,21 @@ def solve_newton(
 
     def emit(kind, *, level=1, **data):
         if progress is not None:
-            progress.emit(kind, level=level, **data)
+            checked_system_call(system, progress.emit, kind, level=level, **data)
 
+    @contextmanager
     def phase(name, **data):
-        return (progress.phase(name, level=3, **data)
-                if progress is not None else nullcontext())
+        check_system_precision(system)
+        try:
+            with (progress.phase(name, level=3, **data)
+                  if progress is not None else nullcontext()):
+                check_system_precision(system)
+                yield
+        except Exception:
+            check_system_precision(system)
+            raise
+        else:
+            check_system_precision(system)
 
     def result(converged, reason, norm):
         emit("newton_end", stage=stage, converged=converged, reason=reason,
@@ -228,7 +267,7 @@ def solve_newton(
                 try:
                     with phase("jacobian", stage=stage,
                                iteration=iteration_offset+total_iterations, homotopy=q):
-                        jacobian = system.jacobian(state, q)
+                        jacobian = checked_system_call(system, system.jacobian, state, q)
                 except OverflowError:
                     reason = "nonfinite_jacobian"
                     break
@@ -240,7 +279,7 @@ def solve_newton(
                 linear_matrix = jacobian.copy() if newton_fallback == "adjoint" else jacobian
                 with phase("linear_solve", stage=stage,
                            iteration=iteration_offset+total_iterations, homotopy=q):
-                    step = system.solve_linear(linear_matrix, -residual)
+                    step = checked_system_call(system, system.solve_linear, linear_matrix, -residual)
             except LinearSolveError:
                 failure = "linear_solve_failed"
             if failure is None and not finite_vector(step):
@@ -267,7 +306,7 @@ def solve_newton(
                          residual_norm=norm, target_norm=target,
                          weight=weight, backtracks=backtracks, step_kind="newton")
                     if callback is not None:
-                        callback(state.copy(), record)
+                        checked_system_call(system, callback, state.copy(), record)
                     break
                 emit("trial_rejected", level=3, throttle=True, stage=stage,
                      iteration=iteration_offset+total_iterations, homotopy=q,
@@ -302,8 +341,8 @@ def solve_newton(
                     return values, candidate_norm
 
                 try:
-                    recovery = adjoint_step(
-                        system, state, residual, jacobian, q, residual_norm=norm,
+                    recovery = checked_system_call(
+                        system, adjoint_step, system, state, residual, jacobian, q, residual_norm=norm,
                         evaluate=evaluate_recovery, max_backtracks=max_backtracks,
                         min_step=min_step,
                     )
@@ -340,7 +379,7 @@ def solve_newton(
                      weight=recovery.step, backtracks=recovery.backtracks,
                      step_kind="adjoint", reason=failure)
                 if callback is not None:
-                    callback(state.copy(), record)
+                    checked_system_call(system, callback, state.copy(), record)
             converged = norm <= target
             reason = "converged" if converged else "max_iterations"
 

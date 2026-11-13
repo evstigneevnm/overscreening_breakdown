@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from numbers import Integral
 from typing import Any
 
-from overscreening_breakdown.rational_mapping import arithmetic_signature
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 @dataclass(frozen=True, init=False, eq=False)
@@ -63,8 +63,8 @@ class CollocationMeritGeometry:
         object.__setattr__(self, "_gram", gram)
 
     def check_precision(self):
-        if arithmetic_signature(self.arithmetic) != self.precision_signature:
-            raise RuntimeError("arithmetic precision changed; rebuild the collocation merit geometry")
+        require_precision(self.arithmetic, self.precision_signature,
+                          rebuild="rebuild the collocation merit geometry")
 
     def dot(self, left, right):
         self.check_precision()

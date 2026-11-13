@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from numbers import Integral
 
 from overscreening_breakdown.nonlinear_solver import (
-    LinearSolveError, NewtonResult, solve_newton,
+    LinearSolveError, NewtonResult, check_system_precision, checked_system_call, solve_newton,
 )
 
 
@@ -89,11 +89,12 @@ class AffineReference:
     """Native copies of a square reference operator and its affine load."""
 
     def __init__(self, matrix, offset, system):
+        check_system_precision(system)
         shape = ((matrix.rows, matrix.cols) if hasattr(matrix, "rows")
                  else getattr(matrix, "shape", ()))
         if shape != (len(offset), len(offset)) or len(offset) == 0:
             raise ValueError("reference matrix and offset must define a nonempty square system")
-        if len(system.initial_guess()) != len(offset):
+        if len(checked_system_call(system, system.initial_guess)) != len(offset):
             raise ValueError("physical and reference coefficient counts differ")
         if not all(system.isfinite(value) for value in _entries(matrix)):
             raise OverflowError("reference matrix must be finite")
@@ -103,21 +104,27 @@ class AffineReference:
         self._offset = offset.copy()
         self.system = system
 
+    def check_precision(self):
+        check_system_precision(self.system)
+
     @property
     def matrix(self):
+        self.check_precision()
         return self._matrix.copy()
 
     @property
     def offset(self):
+        self.check_precision()
         return self._offset.copy()
 
     def residual(self, state):
+        self.check_precision()
         if len(state) != len(self._offset):
             raise ValueError("reference state has an incompatible coefficient count")
         return _matvec(self._matrix, state) + self._offset
 
     def solve(self):
-        return self.system.solve_linear(self.matrix, -self._offset)
+        return checked_system_call(self.system, self.system.solve_linear, self.matrix, -self.offset)
 
 
 class ResidualHomotopy:
@@ -133,8 +140,14 @@ class ResidualHomotopy:
             raise ValueError("reference must belong to this physical system")
         self.physical = system
         self.reference = reference
+        self.check_precision()
+
+    def check_precision(self):
+        check_system_precision(self.physical)
+        self.reference.check_precision()
 
     def _parameter(self, q):
+        self.check_precision()
         q = self.physical.scalar(q)
         if not self.physical.isfinite(q) or not 0 <= q <= 1:
             raise ValueError("homotopy parameter must be finite and lie in [0, 1]")
@@ -143,25 +156,36 @@ class ResidualHomotopy:
     def residual(self, state, q):
         q = self._parameter(q)
         if q == 0:
-            return self.physical.residual(state, self.physical.scalar(0))
+            return checked_system_call(self.physical, self.physical.residual,
+                                       state, self.physical.scalar(0))
         if q == 1:
             return self.reference.residual(state)
-        return ((1-q)*self.physical.residual(state, self.physical.scalar(0))
+        return ((1-q)*checked_system_call(self.physical, self.physical.residual,
+                                         state, self.physical.scalar(0))
                 + q*self.reference.residual(state))
 
     def jacobian(self, state, q):
         q = self._parameter(q)
         if q == 0:
-            return self.physical.jacobian(state, self.physical.scalar(0))
+            return checked_system_call(self.physical, self.physical.jacobian,
+                                       state, self.physical.scalar(0))
         if q == 1:
             return self.reference.matrix
-        return ((1-q)*self.physical.jacobian(state, self.physical.scalar(0))
+        return ((1-q)*checked_system_call(self.physical, self.physical.jacobian,
+                                         state, self.physical.scalar(0))
                 + q*self.reference.matrix)
 
     def nonlinear_system(self, initial_guess=None):
-        initial = (self.physical.initial_guess() if initial_guess is None else initial_guess).copy()
+        self.check_precision()
+        initial = (checked_system_call(self.physical, self.physical.initial_guess)
+                   if initial_guess is None else initial_guess).copy()
+
+        def copy_initial():
+            self.check_precision()
+            return initial.copy()
+
         return replace(self.physical, residual=self.residual, jacobian=self.jacobian,
-                       initial_guess=lambda: initial.copy(), restart=None)
+                       initial_guess=copy_initial, restart=None, check_precision=self.check_precision)
 
 
 @dataclass(frozen=True)
@@ -187,6 +211,7 @@ def solve_continuation(
     A failed trial is never the starting state for another continuation
     attempt. Only the last successfully solved parameter/state is retained.
     """
+    check_system_precision(system)
     if not isinstance(use_globalization, bool):
         raise TypeError("use_globalization must be a boolean")
     if options is None:
@@ -203,7 +228,7 @@ def solve_continuation(
 
     def emit(kind, *, level=1, **data):
         if progress is not None:
-            progress.emit(kind, level=level, **data)
+            checked_system_call(system, progress.emit, kind, level=level, **data)
 
     def collect(result):
         nonlocal total_iterations
@@ -218,8 +243,8 @@ def solve_continuation(
             emit("physical_verification_start", homotopy=zero)
             target = results[-1].stages[-1].target_norm
             try:
-                values = system.residual(state, zero)
-                norm = system.residual_norm(values)
+                values = checked_system_call(system, system.residual, state, zero)
+                norm = checked_system_call(system, system.residual_norm, values)
                 converged = bool(all(finite(value) for value in values)
                                  and finite(norm) and norm <= target)
             except OverflowError:
@@ -262,9 +287,11 @@ def solve_continuation(
     try:
         if progress is not None:
             with progress.phase("reference_assembly"):
-                matrix, offset = reference_factory(options.reference.strength)
+                matrix, offset = checked_system_call(system, reference_factory,
+                                                     options.reference.strength)
         else:
-            matrix, offset = reference_factory(options.reference.strength)
+            matrix, offset = checked_system_call(system, reference_factory,
+                                                 options.reference.strength)
         reference = AffineReference(matrix, offset, system)
         if progress is not None:
             with progress.phase("reference_linear_solve"):
@@ -273,8 +300,8 @@ def solve_continuation(
             state = reference.solve()
         if not all(finite(value) for value in state):
             raise OverflowError("reference solution is nonfinite")
-        norm = system.residual_norm(reference.residual(state))
-        initial_norm = system.residual_norm(offset)
+        norm = checked_system_call(system, system.residual_norm, reference.residual(state))
+        initial_norm = checked_system_call(system, system.residual_norm, offset)
         target = atol+rtol*initial_norm if finite(initial_norm) else atol
         if not finite(target):
             raise ValueError("reference tolerance overflowed in the selected arithmetic")
@@ -287,12 +314,14 @@ def solve_continuation(
         for _ in range(options.max_reference_corrections):
             if finite(norm) and norm <= target:
                 break
-            correction = system.solve_linear(reference.matrix, -reference.residual(state))
+            correction = checked_system_call(system, system.solve_linear, reference.matrix,
+                                              -reference.residual(state))
             linear_solves += 1
             candidate = state+correction
             if not all(finite(value) for value in candidate):
                 break
-            candidate_norm = system.residual_norm(reference.residual(candidate))
+            candidate_norm = checked_system_call(system, system.residual_norm,
+                                                 reference.residual(candidate))
             emit("reference_correction", homotopy=one, linear_solves=linear_solves,
                  residual_norm=candidate_norm, target_norm=target)
             if candidate_norm < zero:

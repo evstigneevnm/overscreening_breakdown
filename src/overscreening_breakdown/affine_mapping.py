@@ -8,7 +8,7 @@ t=0 is the right endpoint and t=pi is the left endpoint.
 from dataclasses import dataclass, field
 from typing import Any
 
-from overscreening_breakdown.rational_mapping import arithmetic_signature
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 @dataclass(frozen=True, init=False)
@@ -43,8 +43,8 @@ class AffineIntervalMap:
             object.__setattr__(self, name, value)
 
     def check_precision(self):
-        if arithmetic_signature(self.arithmetic) != self.precision_signature:
-            raise RuntimeError("arithmetic precision changed; rebuild the affine map or plan")
+        require_precision(self.arithmetic, self.precision_signature,
+                          rebuild="rebuild the affine map or plan")
 
     def reference_coordinate(self, y):
         self.check_precision()

@@ -37,7 +37,11 @@ class CollocationProblemAdapter:
     def arithmetic(self):
         return self.physical.arithmetic
 
+    def check_precision(self):
+        self.physical.check_precision()
+
     def validate_collocation_compatibility(self):
+        self.check_precision()
         if not self.physical.epsilon.is_identity:
             raise ValueError(
                 "collocation supports explicitly constant epsilon=1 only; "
@@ -45,6 +49,7 @@ class CollocationProblemAdapter:
             )
 
     def _validate_boundaries(self):
+        self.check_precision()
         order = 2 if self.physical.delta == 0 else 4
         left, right = self.physical.boundary_conditions
         for boundary in (left, right):
@@ -73,35 +78,44 @@ class CollocationProblemAdapter:
 
     def get_domain(self):
         """Return a fresh list for legacy basis code that copies/mutates it."""
+        self.check_precision()
         return list(self.physical.domain)
 
     def get_boundary_conditions(self):
+        self.check_precision()
         return [list(boundary) for boundary in self.physical.boundary_conditions]
 
     def _map(self, callback, *arguments):
+        self.check_precision()
         # Explicit dtype avoids vectorize's first-element inference, float64
         # narrowing of mpf values, and failures on empty argument arrays.
         arrays = np.broadcast_arrays(
             *(np.asarray(argument, dtype=object) for argument in arguments)
         )
         if arrays[0].shape == ():
-            return callback(*(argument.item() for argument in arrays))
+            result = callback(*(argument.item() for argument in arrays))
+            self.check_precision()
+            return result
         dtype = object if self.arithmetic.use_mpmath else np.float64
         result = np.empty(arrays[0].shape, dtype=dtype)
         for index in np.ndindex(result.shape):
-            result[index] = callback(*(argument[index] for argument in arrays))
+            value = callback(*(argument[index] for argument in arrays))
+            self.check_precision()
+            result[index] = value
         return result
 
     def base_solution(self, x):
         return self._map(self.physical.base_solution, x)
 
     def left_hand_side(self, x=None, u=None, ux=None, q=None):
+        self.check_precision()
         scalar = self.arithmetic.scalar
         if self.physical.delta == 0:
             return [None, None, scalar(1), None, scalar(0)]
         return [None, None, scalar(1) / self.physical.delta**2, None, scalar(-1)]
 
     def _source(self, callback, x, u, q):
+        self.check_precision()
         q = self.arithmetic.scalar(q)
         if not self.arithmetic.isfinite(q) or q != 0:
             raise ValueError("physical source callbacks require q=0; use the continuation wrapper")
@@ -129,9 +143,11 @@ def prepare_collocation_problem(problem, *, use_mpmath=False, prec=100):
     with its existing backend and precision.
     """
     if isinstance(problem, CollocationProblemAdapter):
+        problem.check_precision()
         arithmetic = problem.arithmetic
         if (bool(use_mpmath) != arithmetic.use_mpmath
-                or (use_mpmath and arithmetic.dps != prec)):
+                or (use_mpmath
+                    and arithmetic.context.prec != MpmathArithmetic(prec).context.prec)):
             raise TypeError(
                 "the collocation adapter arithmetic does not match the solver; "
                 "pass the unbound FluxProblem description"

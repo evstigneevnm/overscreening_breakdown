@@ -6,7 +6,7 @@ from math import comb, factorial
 from overscreening_breakdown.coefficients import Coefficient
 from overscreening_breakdown.layered import LayeredMaterial
 from overscreening_breakdown.manufactured.common import ManufacturedCase, NativeFluxDescription
-from overscreening_breakdown.rational_mapping import arithmetic_signature
+from overscreening_breakdown.arithmetic import arithmetic_signature
 
 
 def finite_segment_case(coefficient="constant", *, R="2", delta="2", nonlinear=False,

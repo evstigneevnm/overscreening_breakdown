@@ -8,11 +8,7 @@ construct a new map from raw_L if its arithmetic context changes precision.
 from dataclasses import dataclass, field
 from typing import Any
 
-
-def arithmetic_signature(arithmetic):
-    """Identify the numerical backend and exact working precision in bits."""
-    bits = arithmetic.context.prec if arithmetic.use_mpmath else 53
-    return (arithmetic.use_mpmath, arithmetic.backend, bits)
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 @dataclass(frozen=True, init=False)
@@ -42,8 +38,8 @@ class RationalHalfLineMap:
         object.__setattr__(self, "precision_signature", arithmetic_signature(arithmetic))
 
     def check_precision(self):
-        if arithmetic_signature(self.arithmetic) != self.precision_signature:
-            raise RuntimeError("arithmetic precision changed; rebuild the rational map or plan")
+        require_precision(self.arithmetic, self.precision_signature,
+                          rebuild="rebuild the rational map or plan")
 
     def reference_coordinate(self, y):
         self.check_precision()

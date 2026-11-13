@@ -422,13 +422,18 @@ class GalerkinAssembly:
             except (np.linalg.LinAlgError, ZeroDivisionError) as error:
                 raise LinearSolveError(str(error)) from error
 
+        def copy_initial():
+            self.check_precision()
+            return initial.copy()
+
         return NonlinearSystem(
             residual=self.residual, jacobian=self.jacobian,
             solve_linear=solve_linear, residual_norm=self.residual_norm,
-            initial_guess=lambda: initial.copy(), scalar=self.arithmetic.scalar,
+            initial_guess=copy_initial, scalar=self.arithmetic.scalar,
             isfinite=self.arithmetic.isfinite,
             merit_gradient=self.merit_gradient, dot=self.arithmetic.dot,
             adjoint_direction=self.adjoint_direction,
+            check_precision=self.check_precision,
         )
 
     def with_plan(self, plan, *, progress=None):

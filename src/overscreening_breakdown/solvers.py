@@ -6,7 +6,9 @@ from pathlib import Path
 
 import mpmath as mp
 
-from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
+from overscreening_breakdown.arithmetic import (
+    MpmathArithmetic, NumpyArithmetic, arithmetic_signature, require_precision,
+)
 from overscreening_breakdown.collocation.adapter import CollocationProblemAdapter
 from overscreening_breakdown.collocation.solution import CollocationSolution
 from overscreening_breakdown.galerkin.basis import GalerkinBasis
@@ -42,7 +44,10 @@ def _bind(problem, arithmetic):
     bind = getattr(problem, "bind", None)
     if not callable(bind):
         raise TypeError("problem must provide bind(arithmetic); use FluxProblem for legacy fixtures")
+    signature = arithmetic_signature(arithmetic)
     physical = bind(arithmetic)
+    require_precision(arithmetic, signature, subject="physical problem binding",
+                      rebuild="bind the original problem again")
     if not isinstance(physical, BoundFluxProblem) or physical.arithmetic is not arithmetic:
         raise TypeError("problem.bind must return a snapshot in the supplied arithmetic")
     physical.check_precision()
@@ -92,12 +97,15 @@ def _initial_coefficients(initial, physical, N, L, solver_type):
 
 
 def _project_initial_u(assembly, callback):
+    assembly.check_precision()
     arithmetic = assembly.arithmetic
     table, weights = assembly.table, assembly.plan.physical_weights
     m = assembly.basis.n_u
     values = []
     for x, y in zip(assembly.plan.physical_nodes, assembly.plan.nodes):
-        value = arithmetic.scalar(callback(x, arithmetic))
+        value = callback(x, arithmetic)
+        assembly.check_precision()
+        value = arithmetic.scalar(value)
         if not arithmetic.isfinite(value):
             raise ValueError("initial field callback must return finite values")
         values.append(value-assembly.lift.value(y))
@@ -214,14 +222,20 @@ def solve(problem, N, *, solver="collocation", L=1, use_mpmath=False, precision=
                 info["target_norm"] = diagnostic.stages[-1].target_norm
         if result.nonlinear_converged and result.quadrature_converged is False:
             info["reason"] = "quadrature_not_converged"
+        result.check_precision()
         progress.emit(
             "solve_end", converged=result.converged,
             nonlinear_converged=result.nonlinear_converged,
             quadrature_converged=result.quadrature_converged,
             norm="rms" if solver == "collocation" else "euclidean", **info,
         )
+        result.check_precision()
         return result
     except BaseException as error:
+        try:
+            progress.check_precision()
+        except RuntimeError:
+            raise error
         progress.emit(
             "solve_interrupted" if isinstance(error, KeyboardInterrupt) else "solve_error",
             error_type=type(error).__name__, reason=str(error),

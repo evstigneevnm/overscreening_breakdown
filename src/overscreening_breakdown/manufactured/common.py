@@ -12,6 +12,7 @@ from numbers import Integral
 from typing import Callable, Optional, Tuple
 
 from overscreening_breakdown.problems.flux import FluxProblem
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 def _coordinate(x, arithmetic):
@@ -153,9 +154,16 @@ class NativeFluxDescription:
     domain: tuple = (0, "inf")
 
     def bind(self, arithmetic):
-        return FluxProblem(delta=self.delta(arithmetic), f=self.f, f_u=self.f_u,
+        signature = arithmetic_signature(arithmetic)
+        delta = self.delta(arithmetic)
+        require_precision(arithmetic, signature, subject="manufactured problem binding",
+                          rebuild="bind the original manufactured description again")
+        boundaries = self.boundaries(arithmetic)
+        require_precision(arithmetic, signature, subject="manufactured problem binding",
+                          rebuild="bind the original manufactured description again")
+        return FluxProblem(delta=delta, f=self.f, f_u=self.f_u,
                            epsilon=self.epsilon, domain=self.domain,
-                           boundary_conditions=self.boundaries(arithmetic),
+                           boundary_conditions=boundaries,
                            initial_guess=self.initial_guess).bind(arithmetic)
 
 

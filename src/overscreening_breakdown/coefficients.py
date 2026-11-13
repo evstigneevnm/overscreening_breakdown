@@ -9,12 +9,16 @@ evaluation is nevertheless checked against the declared positive bounds.
 Frozen descriptions protect their metadata, not mutable state captured by user
 callbacks.  Callers are responsible for keeping that state unchanged while a
 solver uses the coefficient.
+Bound evaluations require the exact recorded owner precision, including for
+constants and wall traces; rebind the original description after a change.
 """
 
 from dataclasses import dataclass, field
 from decimal import Decimal
 from numbers import Number
 from typing import Any, Callable, Tuple
+
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 def _finite_scalar(arithmetic, value, name):
@@ -41,6 +45,14 @@ class _BoundCoefficient:
     interfaces: Tuple[Any, ...]
     is_identity: bool
     _function: Any = field(default=None, repr=False, compare=False)
+    precision_signature: tuple = field(init=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "precision_signature", arithmetic_signature(self.arithmetic))
+
+    def check_precision(self):
+        require_precision(self.arithmetic, self.precision_signature,
+                          subject="coefficient", rebuild="bind the coefficient again")
 
     def __call__(self, x):
         """Evaluate at a finite ``x >= 0``; at zero use the right wall trace.
@@ -49,6 +61,7 @@ class _BoundCoefficient:
         coefficient specified almost everywhere can have an arbitrary value
         there, whereas the weak boundary load needs its declared right trace.
         """
+        self.check_precision()
         x = _finite_scalar(self.arithmetic, x, "coefficient coordinate")
         zero = self.arithmetic.scalar(0)
         if x < zero:
@@ -57,9 +70,9 @@ class _BoundCoefficient:
             return self.wall_value
         if self._function is None:
             return self.wall_value
-        value = _finite_scalar(
-            self.arithmetic, self._function(x, self.arithmetic), "epsilon(x)"
-        )
+        value = self._function(x, self.arithmetic)
+        self.check_precision()
+        value = _finite_scalar(self.arithmetic, value, "epsilon(x)")
         if not self.lower_bound <= value <= self.upper_bound:
             raise ValueError("epsilon(x) must lie within its declared bounds")
         return value
@@ -72,16 +85,20 @@ class ConstantCoefficient:
     value: Any = 1
 
     def bind(self, arithmetic):
+        signature = arithmetic_signature(arithmetic)
         value = _finite_scalar(arithmetic, self.value, "constant epsilon")
         if value <= arithmetic.scalar(0):
             raise ValueError("constant epsilon must be strictly positive")
+        identity = _exactly_one(self.value)
+        require_precision(arithmetic, signature, subject="coefficient binding",
+                          rebuild="bind the coefficient again")
         return _BoundCoefficient(
             arithmetic=arithmetic,
             lower_bound=value,
             upper_bound=value,
             wall_value=value,
             interfaces=(),
-            is_identity=_exactly_one(self.value),
+            is_identity=identity,
         )
 
 
@@ -137,6 +154,7 @@ class Coefficient:
         )
 
     def bind(self, arithmetic):
+        signature = arithmetic_signature(arithmetic)
         zero = arithmetic.scalar(0)
         lower = _finite_scalar(arithmetic, self.lower_bound, "lower epsilon bound")
         upper = _finite_scalar(arithmetic, self.upper_bound, "upper epsilon bound")
@@ -155,6 +173,8 @@ class Coefficient:
             if value <= previous:
                 raise ValueError("epsilon interfaces must be positive and strictly increasing")
             previous = value
+        require_precision(arithmetic, signature, subject="coefficient binding",
+                          rebuild="bind the coefficient again")
         return _BoundCoefficient(
             arithmetic=arithmetic,
             lower_bound=lower,

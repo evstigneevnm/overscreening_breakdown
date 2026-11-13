@@ -71,6 +71,14 @@ def _check_norm_plan(plan):
         previous = x
 
 
+def _norm_callback(function, x, plan, name):
+    """Evaluate in the plan's precision, including arbitrary reference fields."""
+    plan.check_precision()
+    value = function(x)
+    plan.check_precision()
+    return _finite(plan.arithmetic, value, name)
+
+
 def _physical_squared_norm(functions, plan):
     _check_norm_plan(plan)
     if any(not callable(function) for function in functions):
@@ -79,9 +87,11 @@ def _physical_squared_norm(functions, plan):
     terms = []
     for x, weight in zip(plan.physical_nodes, plan.physical_weights):
         for function in functions:
-            value = _finite(arithmetic, function(x), "physical norm callback")
+            value = _norm_callback(function, x, plan, "physical norm callback")
             terms.append(_finite(arithmetic, weight*value*value, "physical squared norm term"))
-    return _sum(arithmetic, terms)
+    result = _sum(arithmetic, terms)
+    plan.check_precision()
+    return result
 
 
 def physical_l2_norm(function, plan):
@@ -101,11 +111,9 @@ def physical_l2_error(function, reference, plan):
     if not callable(function) or not callable(reference):
         raise TypeError("error callbacks must be callable")
     _check_norm_plan(plan)
-    arithmetic = plan.arithmetic
-
     def difference(x):
-        return (_finite(arithmetic, function(x), "physical field")
-                -_finite(arithmetic, reference(x), "physical reference"))
+        return (_norm_callback(function, x, plan, "physical field")
+                -_norm_callback(reference, x, plan, "physical reference"))
 
     return physical_l2_norm(difference, plan)
 
@@ -115,15 +123,13 @@ def physical_h1_error(function, derivative, reference, reference_dx, plan):
     if any(not callable(callback) for callback in (function, derivative, reference, reference_dx)):
         raise TypeError("error callbacks must be callable")
     _check_norm_plan(plan)
-    arithmetic = plan.arithmetic
-
     def difference(x):
-        return (_finite(arithmetic, function(x), "physical field")
-                -_finite(arithmetic, reference(x), "physical reference"))
+        return (_norm_callback(function, x, plan, "physical field")
+                -_norm_callback(reference, x, plan, "physical reference"))
 
     def derivative_difference(x):
-        return (_finite(arithmetic, derivative(x), "physical derivative")
-                -_finite(arithmetic, reference_dx(x), "physical reference derivative"))
+        return (_norm_callback(derivative, x, plan, "physical derivative")
+                -_norm_callback(reference_dx, x, plan, "physical reference derivative"))
 
     return physical_h1_norm(difference, derivative_difference, plan)
 

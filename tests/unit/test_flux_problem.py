@@ -47,7 +47,9 @@ class FluxProblemTests(unittest.TestCase):
         arithmetic = MpmathArithmetic(100)
         bound = self.problem().bind(arithmetic)
         x, u = arithmetic.scalar("0.7"), arithmetic.scalar("0.123456789")
-        derivative = arithmetic.context.diff(lambda value: bound.physical_rhs(x, value), u)
+        # diff raises working precision; differentiate the unbound formula,
+        # independently of the fixed-precision numerical snapshot.
+        derivative = arithmetic.context.diff(lambda value: cubic_source(x, value, arithmetic), u)
         self.assertLess(abs(derivative-bound.physical_rhs_u(x, u)), arithmetic.scalar("1e-95"))
 
     def test_description_copies_domain_and_boundary_metadata(self):

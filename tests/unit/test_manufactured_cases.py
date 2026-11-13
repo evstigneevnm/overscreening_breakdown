@@ -76,14 +76,18 @@ class ManufacturedCaseTests(unittest.TestCase):
                 if case.supported_solvers == ("legacy_collocation",):
                     continue
                 with self.subTest(case=case.identifier, digits=digits):
-                    physical = case.make_problem().bind(a)
+                    description = case.make_problem()
+                    physical = description.bind(a)
                     for text in ("0.125", "1.5"):
                         x = a.scalar(text)
                         u = case.u(x, a)
                         source = a.context.diff(lambda t: case.flux(t, a), x)
                         self.assert_close(physical.physical_rhs(x, u), source, a)
                         trial = a.scalar("0.37")
-                        derivative = a.context.diff(lambda value: physical.physical_rhs(x, value), trial)
+                        # Each oracle evaluation binds from raw data at diff's
+                        # temporary precision, leaving the tested snapshot fixed.
+                        derivative = a.context.diff(
+                            lambda value: description.bind(a).physical_rhs(x, value), trial)
                         self.assert_close(physical.physical_rhs_u(x, trial), derivative, a)
                     for endpoint, row in zip(physical.domain, physical.boundary_conditions):
                         if endpoint == a.inf:

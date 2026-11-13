@@ -64,7 +64,14 @@ class BSKProblemTests(unittest.TestCase):
         expected = -a.scalar("0.1")/a.sqrt(2*a.pi)
         self.assertLess(abs(problem.physical_rhs(0, 0)-expected), a.scalar("1e-78"))
         for x, u in ((a.scalar("0.125"), a.scalar("0.37")), (a.scalar(3), a.scalar(-1))):
-            derivative = a.context.diff(lambda value: problem.physical_rhs(x, value), u)
+            def original_source(value):
+                # The independent formula can use diff's extra working
+                # precision; the bound problem retains its original stamp.
+                gaussian = a.exp(-x*x/(2*a.scalar(7)**2))/a.sqrt(2*a.pi)
+                return ((a.sinh(value)-a.scalar("0.1")*gaussian*a.exp(value))
+                        /(1+a.sinh(value/2)**2))
+
+            derivative = a.context.diff(original_source, u)
             self.assertLess(abs(problem.physical_rhs_u(x, u)-derivative), a.scalar("1e-77"))
 
     def test_bindings_are_isolated_and_raw_decimal_parameters_survive(self):

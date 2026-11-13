@@ -6,6 +6,8 @@ from numbers import Integral
 
 import numpy as np
 
+from overscreening_breakdown.nonlinear_solver import check_system_precision, checked_system_call
+
 
 @dataclass(frozen=True)
 class InitializationResult:
@@ -61,6 +63,7 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200,
     improving candidate may still be used. Callback/programming errors
     propagate. The main nonlinear solver must check the returned state.
     """
+    check_system_precision(system)
     validate_initializer("fsolve", tolerance=tolerance, max_evaluations=max_evaluations)
     if (not isinstance(initial, np.ndarray) or initial.ndim != 1
             or initial.dtype != np.dtype("float64")):
@@ -79,7 +82,7 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200,
 
     def emit(kind, *, level=1, throttle=False, **data):
         if progress is not None:
-            progress.emit(kind, level=level, throttle=throttle, **data)
+            checked_system_call(system, progress.emit, kind, level=level, throttle=throttle, **data)
 
     emit("initializer_start", initializer="fsolve", budget=int(max_evaluations),
          step_tolerance=np.float64(tolerance), homotopy=zero)
@@ -101,10 +104,10 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200,
         nonlocal best, best_norm
         consume(0)
         values = state(values)
-        residual = np.asarray(system.residual(values.copy(), zero))
+        residual = np.asarray(checked_system_call(system, system.residual, values.copy(), zero))
         if residual.shape != original.shape or residual.dtype != original.dtype:
             raise ValueError("initializer residual must match the NumPy coefficient vector")
-        norm = system.residual_norm(residual)
+        norm = checked_system_call(system, system.residual_norm, residual)
         if not np.all(np.isfinite(residual)) or not system.isfinite(norm):
             raise OverflowError("nonfinite initializer residual")
         if norm < zero:
@@ -123,7 +126,8 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200,
         with (progress.phase("initializer_jacobian", level=3,
                              evaluations=sum(counts), homotopy=zero)
               if progress is not None else nullcontext()):
-            matrix = np.asarray(system.jacobian(values.copy(), zero))
+            matrix = np.asarray(checked_system_call(system, system.jacobian, values.copy(), zero))
+        check_system_precision(system)
         if matrix.shape != (len(original), len(original)) or matrix.dtype != original.dtype:
             raise ValueError("initializer Jacobian must be a square NumPy float64 matrix")
         if not np.all(np.isfinite(matrix)):

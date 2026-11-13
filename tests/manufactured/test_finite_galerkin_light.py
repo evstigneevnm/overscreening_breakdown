@@ -95,7 +95,8 @@ def test_manufactured_source_and_transmission_are_independently_consistent(grade
         flux_dx = a.context.diff(lambda t: case.flux(t, a), x)
         assert abs(physical.physical_rhs(x, case.u(x, a))-flux_dx) < a.scalar("1e-58")
         trial = a.scalar("0.37")
-        jacobian = a.context.diff(lambda u: physical.physical_rhs(x, u), trial)
+        # Bind the oracle at diff's temporary precision from the raw case.
+        jacobian = a.context.diff(lambda u: case.make_problem().bind(a).physical_rhs(x, u), trial)
         assert abs(physical.physical_rhs_u(x, trial)-jacobian) < a.scalar("1e-58")
     h = a.scalar("1e-25")
     for point in physical.epsilon.interfaces:

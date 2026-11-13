@@ -7,8 +7,9 @@ from typing import Any
 import numpy as np
 
 from overscreening_breakdown.collocation.adapter import CollocationProblemAdapter
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 from overscreening_breakdown.problems.flux import BoundFluxProblem
-from overscreening_breakdown.rational_mapping import RationalHalfLineMap, arithmetic_signature
+from overscreening_breakdown.rational_mapping import RationalHalfLineMap
 from overscreening_breakdown.galerkin.solution import _sum, _distance_polynomial
 
 
@@ -89,8 +90,8 @@ class CollocationSolution:
     def check_precision(self):
         self.physical.check_precision()
         self.mapping.check_precision()
-        if arithmetic_signature(self.arithmetic) != self._signature:
-            raise RuntimeError("solution precision changed; load a new snapshot")
+        require_precision(self.arithmetic, self._signature, subject="solution",
+                          rebuild="load a new snapshot")
 
     def _coordinate(self, x):
         self.check_precision()

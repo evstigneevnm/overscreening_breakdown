@@ -10,6 +10,8 @@ line search rather than inferred from a preconditioner name.
 
 from dataclasses import dataclass
 
+from overscreening_breakdown.nonlinear_solver import check_system_precision, checked_system_call
+
 
 @dataclass(frozen=True)
 class AdjointStepResult:
@@ -36,6 +38,7 @@ def adjoint_step(system, state, residual, jacobian, parameter, *, residual_norm,
     submitted to this callback. Numerical overflow is a rejected recovery;
     programming exceptions propagate. No user observer is called here.
     """
+    check_system_precision(system)
     scalar, finite = system.scalar, system.isfinite
     zero, one, half = scalar(0), scalar(1), scalar("0.5")
     minimum, sufficient = scalar(min_step), scalar(armijo)
@@ -52,6 +55,7 @@ def adjoint_step(system, state, residual, jacobian, parameter, *, residual_norm,
 
     def finish(reason, *, candidate=None, candidate_residual=None, norm=None,
                weight=None, backtracks=0, merit=None):
+        check_system_precision(system)
         accepted = candidate is not None
         return AdjointStepResult(
             candidate if accepted else state.copy(),
@@ -65,7 +69,7 @@ def adjoint_step(system, state, residual, jacobian, parameter, *, residual_norm,
         if len(left) != len(right):
             raise ValueError("coefficient dot products require equal vector lengths")
         callback = system.dot
-        return scalar(callback(left, right) if callback is not None
+        return scalar(checked_system_call(system, callback, left, right) if callback is not None
                       else sum((a*b for a, b in zip(left, right)), zero))
 
     if not finite(initial_merit):
@@ -77,7 +81,7 @@ def adjoint_step(system, state, residual, jacobian, parameter, *, residual_norm,
                 gradient[column] = sum((jacobian[row, column]*value
                                         for row, value in enumerate(residual)), zero)
         else:
-            gradient = system.merit_gradient(residual, jacobian)
+            gradient = checked_system_call(system, system.merit_gradient, residual, jacobian)
         if len(gradient) != len(state):
             raise ValueError("merit gradient must match the state dimension")
         if not all(finite(value) for value in gradient):
@@ -98,7 +102,7 @@ def adjoint_step(system, state, residual, jacobian, parameter, *, residual_norm,
         if not finite(gradient_norm):
             return finish("adjoint_nonfinite_gradient")
         direction = (-gradient if system.adjoint_direction is None
-                     else system.adjoint_direction(gradient))
+                     else checked_system_call(system, system.adjoint_direction, gradient))
         if len(direction) != len(state):
             raise ValueError("adjoint direction must match the state dimension")
         if not all(finite(value) for value in direction):
@@ -123,7 +127,8 @@ def adjoint_step(system, state, residual, jacobian, parameter, *, residual_norm,
         candidate = state+weight*direction
         if all(finite(value) for value in candidate):
             evaluations += 1
-            candidate_residual, candidate_norm = evaluate(candidate, parameter)
+            candidate_residual, candidate_norm = checked_system_call(
+                system, evaluate, candidate, parameter)
             if candidate_residual is not None:
                 merit = half*candidate_norm*candidate_norm
                 if (finite(merit) and candidate_norm < residual_norm

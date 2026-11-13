@@ -16,6 +16,8 @@ from typing import Mapping
 
 import numpy as np
 
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
+
 
 class ProgressCallbackError(RuntimeError):
     """An observer failed; its original exception is retained as the cause.
@@ -118,11 +120,26 @@ class ProgressReporter:
         self._shared = _SharedState(progress_callback, stream, clock, clock())
 
     @property
+    def arithmetic(self):
+        return self._arithmetic
+
+    @arithmetic.setter
+    def arithmetic(self, owner):
+        self._arithmetic = owner
+        self._precision_signature = None if owner is None else arithmetic_signature(owner)
+
+    def check_precision(self):
+        if self.arithmetic is not None:
+            require_precision(self.arithmetic, self._precision_signature,
+                              subject="progress reporter", rebuild="start a new solve or reporter")
+
+    @property
     def enabled(self):
         return bool(self.verbosity or (self._shared.callback is not None
                                       and not self._shared.callback_failed))
 
     def bind(self, **context):
+        self.check_precision()
         result = object.__new__(type(self))
         result.verbosity = self.verbosity
         result.progress_interval = self.progress_interval
@@ -156,6 +173,7 @@ class ProgressReporter:
 
     def wants(self, kind, level=1, throttle=False):
         """Check demand without consuming an output slot or computing a norm."""
+        self.check_precision()
         self._level(level)
         if self._shared.callback is not None and not self._shared.callback_failed:
             return True
@@ -192,6 +210,7 @@ class ProgressReporter:
               flush=True)
 
     def emit(self, kind, level=1, throttle=False, **data):
+        self.check_precision()
         self._level(level)
         if not isinstance(kind, str) or not kind:
             raise ValueError("progress event kind must be a nonempty string")
@@ -212,11 +231,15 @@ class ProgressReporter:
                 self._shared.callback_failed = True
                 if not isinstance(error, Exception):
                     raise
+                self.check_precision()
                 raise ProgressCallbackError("progress callback failed: " + str(error)) from error
+            else:
+                self.check_precision()
         if due:
             self._write(event)
             key = (self.solver, self.method, kind, data.get("phase"))
             self._shared.last_output[key] = now
+        self.check_precision()
 
     @contextmanager
     def phase(self, name, level=1, **data):
@@ -229,6 +252,12 @@ class ProgressReporter:
         try:
             yield reporter
         except BaseException as error:
+            try:
+                reporter.check_precision()
+            except RuntimeError:
+                # Error reporting cannot reinterpret native metadata in the
+                # changed context or replace the original failure's diagnosis.
+                raise error
             reporter.emit("phase_end", level=level, success=False,
                           duration=self._shared.clock()-started,
                           error_type=type(error).__name__, reason=str(error))

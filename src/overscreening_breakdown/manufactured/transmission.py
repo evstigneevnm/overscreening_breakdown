@@ -9,7 +9,7 @@ from typing import Callable
 from overscreening_breakdown.coefficients import Coefficient
 from overscreening_breakdown.manufactured.common import ManufacturedCase
 from overscreening_breakdown.problems.flux import FluxProblem
-from overscreening_breakdown.rational_mapping import arithmetic_signature
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 def transmission_case():
@@ -73,8 +73,9 @@ class _LayeredReference:
         return self.material.arithmetic
 
     def check_precision(self):
-        if arithmetic_signature(self.arithmetic) != self.signature:
-            raise RuntimeError("reference precision changed; bind the manufactured case again")
+        require_precision(self.arithmetic, self.signature, subject="reference",
+                          rebuild="bind the manufactured case again")
+        self.material.check_precision()
 
     def derivatives(self, x, region=None):
         self.check_precision()

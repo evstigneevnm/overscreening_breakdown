@@ -51,6 +51,50 @@ retains its original rounding. Construct a new immutable description when
 changing physical parameters. Binding copies parameter and boundary values
 into a numerical snapshot without changing another owner's context.
 
+Bound numerical objects retain the backend and exact working precision in
+bits at construction. Source and derivative calls, initial guesses, coefficient
+evaluations (including constants and wall traces), discrete operators,
+continuation endpoints, field evaluation, and integration reject reuse at a
+different precision with `RuntimeError`. The error reports the recorded and
+current bit counts and how to rebuild. A one-bit change can leave `dps`
+unchanged, so comparing decimal digits is insufficient. Precision errors stop
+the solve and propagate through initialization, Newton, and continuation.
+
+For example:
+
+```python
+arithmetic = MpmathArithmetic(50)
+physical = problem.bind(arithmetic)
+arithmetic.context.prec += 1
+# physical.physical_rhs(1, 1) now raises RuntimeError.
+fresh = problem.bind(arithmetic)  # Convert the original raw data again.
+value = fresh.physical_rhs(1, 1)
+```
+
+Rebuild from the original problem/coefficient descriptions and raw geometry;
+raising precision cannot recover digits from already-rounded parameters or
+coefficients. Creating a separate `MpmathArithmetic` for another precision
+keeps the original snapshots usable. Restoring an owner's exact original
+precision also permits its original immutable snapshots again. Raw snapshot
+metadata remain readable; numerical operations enforce the stamp. A
+`QuadratureFactory` can rebuild plans from its retained raw inputs after a
+precision change, while plans already issued at the earlier precision reject
+evaluation.
+
+User callbacks must return with the owner's precision unchanged. Source,
+coefficient, quadrature, and physical-norm callbacks are checked before their
+results enter numerical arithmetic; a persistent context change raises before
+another callback or cached weight is used. Scoped extra working precision is
+allowed when it is restored before the callback returns. Progress observers
+are checked at phase boundaries and at solve completion, so a final observer
+cannot make a successfully returned solution stale. `mpmath.diff` raises
+working precision while evaluating its function: differentiate an independent
+formula, or bind the original description afresh inside each oracle evaluation,
+instead of differentiating a captured fixed-precision snapshot. Owned-context
+checks never alter another arithmetic owner or global mpmath precision. The
+legacy live collocation operator additionally checks its assembled global
+mpmath precision; public saved field snapshots retain their independent owner.
+
 `Coefficient(function, ...)` uses a scalar `function(x, arithmetic)` callback.
 `Coefficient.from_function(epsilon_x, ...)` adapts an explicit one-argument
 `epsilon(x)` function. Supply positive finite lower/upper bounds, the right

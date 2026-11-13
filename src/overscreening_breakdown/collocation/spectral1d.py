@@ -5,11 +5,14 @@ import pickle
 import mpmath #for custom pecision arithmetic
 from inspect import isfunction, isclass
 from numbers import Integral
+from types import SimpleNamespace
 
 from overscreening_breakdown.nonlinear_solver import LinearSolveError, NonlinearSystem
 from overscreening_breakdown.continuation import solve_continuation
 from overscreening_breakdown.collocation.adapter import CollocationProblemAdapter, prepare_collocation_problem
-from overscreening_breakdown.arithmetic import NumpyArithmetic, MpmathArithmetic
+from overscreening_breakdown.arithmetic import (
+    NumpyArithmetic, MpmathArithmetic, arithmetic_signature, require_precision,
+)
 from overscreening_breakdown.rational_mapping import RationalHalfLineMap
 from overscreening_breakdown.affine_mapping import AffineIntervalMap
 from overscreening_breakdown.initialization import initialize_fsolve, validate_initializer
@@ -939,6 +942,14 @@ class solve_nonlinear_problem(collocation_discretization):
         self.__use_mpmath = super().is_using_mpmath()
         self.__precision = prec
         self.__mp_ref = super().get_mpmath_ref()
+        # Cached collocation matrices use the legacy global context, whereas
+        # physical callbacks may belong to an independent cloned context.
+        self.__operator_arithmetic = SimpleNamespace(
+            use_mpmath=self.__use_mpmath,
+            backend=mpmath.libmp.BACKEND if self.__use_mpmath else "numpy",
+            context=self.__mp_ref.mp if self.__use_mpmath else np,
+        )
+        self.__operator_signature = arithmetic_signature(self.__operator_arithmetic)
         if self.__use_mpmath:
             self.__dot = self.__mp_ref.fdot
             self.__sqrt = self.__mp_ref.sqrt
@@ -949,7 +960,17 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__norm = np.linalg.norm
 
 
+    def check_precision(self):
+        """Reject cached operators after either numerical owner changes bits."""
+        require_precision(
+            self.__operator_arithmetic, self.__operator_signature,
+            subject="collocation operator", rebuild="construct a new collocation solver",
+        )
+        if isinstance(self.__problem, CollocationProblemAdapter):
+            self.__problem.check_precision()
+
     def __form_matrices(self):
+        self.check_precision()
         alpha = self.__problem.left_hand_side()
         self.__S  = self.bilinear_form(self.psi, 0)
         if alpha[0] != None:
@@ -964,6 +985,7 @@ class solve_nonlinear_problem(collocation_discretization):
             self.__S = self.__S + self.bilinear_form(self.ddddpsi, alpha[4])
 
         self.__S = self.set_boundary_bilinear_form_tau_method(self.__S )
+        self.check_precision()
         # print(self.__S)
 
         # print("alpha = ", alpha)
@@ -1002,9 +1024,11 @@ class solve_nonlinear_problem(collocation_discretization):
         return N
 
     def __residual_operator(self, c, q=0):
+        self.check_precision()
         if q != 0:
             raise ValueError("physical residual requires q=0; use the continuation wrapper")
         rhs = self.__right_hand_side(c, 0)
+        self.check_precision()
         if self.__use_mpmath:
             lhs = self.__S*c#self.__dot(self.__S, c)
         else:
@@ -1013,9 +1037,11 @@ class solve_nonlinear_problem(collocation_discretization):
         return res
         
     def __linearization_operator(self, c, q=0):
+        self.check_precision()
         if q != 0:
             raise ValueError("physical Jacobian requires q=0; use the continuation wrapper")
         N = self.__right_hand_side_linearization(c, 0)
+        self.check_precision()
         A = -(self.__S-N)
         return A
 
@@ -1046,6 +1072,7 @@ class solve_nonlinear_problem(collocation_discretization):
         super().set_domain(domain)
 
     def set_problem(self, problem):
+        self.check_precision()
         problem = prepare_collocation_problem(
             problem, use_mpmath=self.__use_mpmath, prec=self.__precision,
         )
@@ -1067,6 +1094,7 @@ class solve_nonlinear_problem(collocation_discretization):
         Continuation wraps this fixed physical system instead of modifying
         the physical RHS callbacks or their shared problem description.
         """
+        self.check_precision()
         scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
         initial = (self.__base_solution_expand() if initial_guess is None
                    else initial_guess.copy())
@@ -1074,8 +1102,11 @@ class solve_nonlinear_problem(collocation_discretization):
             raise ValueError("initial coefficient count does not match the collocation basis")
 
         def solve_linear(matrix, rhs):
+            self.check_precision()
             try:
-                return self.solve(matrix, rhs)
+                result = self.solve(matrix, rhs)
+                self.check_precision()
+                return result
             except (np.linalg.LinAlgError, ZeroDivisionError) as error:
                 raise LinearSolveError(str(error)) from error
 
@@ -1114,15 +1145,24 @@ class solve_nonlinear_problem(collocation_discretization):
                                      dot=geometry.dot,
                                      adjoint_direction=adjoint_direction)
 
+        def checked(callback):
+            def evaluate(*args):
+                self.check_precision()
+                value = callback(*args)
+                self.check_precision()
+                return value
+            return evaluate
+
         return NonlinearSystem(
             residual=self.__residual_operator,
             jacobian=self.__linearization_operator,
             solve_linear=solve_linear,
-            residual_norm=lambda residual: self.__norm(residual)/self.__sqrt(self._M),
-            initial_guess=lambda: initial.copy(),
+            residual_norm=checked(lambda residual: self.__norm(residual)/self.__sqrt(self._M)),
+            initial_guess=checked(lambda: initial.copy()),
             scalar=scalar,
             isfinite=self.__mp_ref.isfinite,
-            **merit_options,
+            check_precision=self.check_precision,
+            **{name: checked(callback) for name, callback in merit_options.items()},
         )
 
     def reference_operator(self, strength="1"):
@@ -1132,6 +1172,7 @@ class solve_nonlinear_problem(collocation_discretization):
         physical discretization; only the source is replaced by strength*u.
         No physical source callback is evaluated here.
         """
+        self.check_precision()
         scalar = self.__mp_ref.mpf if self.__use_mpmath else np.float64
         strength = scalar(strength)
         if not self.__mp_ref.isfinite(strength) or strength <= 0:
@@ -1153,6 +1194,7 @@ class solve_nonlinear_problem(collocation_discretization):
         return relnorm
 
     def solve_problem(self, c0 = None):
+        self.check_precision()
         self.__converged = False
         self.__newton_result = None
         self.__initialization_result = None
@@ -1210,6 +1252,7 @@ class solve_nonlinear_problem(collocation_discretization):
                 solve_linear=self.solve,
                 residual_norm=lambda residual: self.__norm(residual)/self.__sqrt(self._M),
                 initial_guess=lambda: c.copy(), scalar=np.float64, isfinite=np.isfinite,
+                check_precision=self.check_precision,
             )
             self.__initialization_result = initialize_fsolve(
                 initial_system, c.copy(), tolerance=self.__initializer_tolerance,

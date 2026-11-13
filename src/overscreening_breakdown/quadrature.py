@@ -21,7 +21,8 @@ from typing import Any, Tuple
 
 import numpy as np
 
-from overscreening_breakdown.rational_mapping import RationalHalfLineMap, arithmetic_signature
+from overscreening_breakdown.arithmetic import arithmetic_signature
+from overscreening_breakdown.rational_mapping import RationalHalfLineMap
 from overscreening_breakdown.affine_mapping import AffineIntervalMap
 
 
@@ -99,7 +100,13 @@ class QuadraturePlan:
         arithmetic = self.arithmetic
         products = []
         for node, weight in zip(nodes, weights):
-            value = _finite_scalar(arithmetic, callback(node), "integrand value")
+            self.check_precision()
+            value = callback(node)
+            # An integrand can access its owner's context through a closure.
+            # Reject a precision change before converting its return value or
+            # combining it with nodes and weights rounded at the old precision.
+            self.check_precision()
+            value = _finite_scalar(arithmetic, value, "integrand value")
             products.append(_finite_scalar(
                 arithmetic, weight * value, "weighted integrand value"
             ))
@@ -107,6 +114,7 @@ class QuadraturePlan:
             value = arithmetic.context.fsum(products)
         else:
             value = math.fsum(products)
+        self.check_precision()
         return _finite_scalar(arithmetic, value, "quadrature sum")
 
     def integrate(self, callback):
@@ -154,6 +162,7 @@ class QuadraturePlan:
         target = _finite_scalar(
             arithmetic, atol + rtol * abs(refined_value), "refinement target"
         )
+        self.check_precision()
         return RefinementCheck(
             coarse_value, refined_value, difference, target,
             bool(difference <= target), refined,

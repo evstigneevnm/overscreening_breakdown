@@ -7,13 +7,15 @@ part of this interface. Discretizations apply their own normalization.
 Callbacks receive the bound arithmetic explicitly. A frozen description
 captures callback identity, not mutable objects inside a callback's closure;
 callers must keep such state unchanged while a solver uses the problem.
+Bound evaluations reject owner precision changes before using rounded data
+and after callbacks return. Bind the original description at a new precision.
 """
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Tuple
 
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 from overscreening_breakdown.coefficients import as_coefficient
-from overscreening_breakdown.rational_mapping import arithmetic_signature
 
 
 _DEFAULT_BOUNDARIES = (
@@ -80,6 +82,7 @@ class FluxProblem:
 
     def bind(self, arithmetic):
         """Convert parameters once in a solver's arithmetic context."""
+        signature = arithmetic_signature(arithmetic)
         zero = arithmetic.scalar(0)
         delta = _finite_scalar(arithmetic, self.delta, "delta")
         if delta < zero:
@@ -98,6 +101,8 @@ class FluxProblem:
             for row in self.boundary_conditions
         )
         epsilon = self.epsilon.bind(arithmetic)
+        require_precision(arithmetic, signature, subject="physical problem binding",
+                          rebuild="bind the original problem again")
         if any(not left < point < right for point in epsilon.interfaces):
             raise ValueError("epsilon interfaces must lie strictly inside the domain")
         return BoundFluxProblem(
@@ -127,13 +132,18 @@ class BoundFluxProblem:
     precision_signature: tuple = field(init=False)
 
     def __post_init__(self):
+        if getattr(self.epsilon, "arithmetic", None) is not self.arithmetic:
+            raise ValueError("physical problem and coefficient must share one arithmetic owner")
+        self.epsilon.check_precision()
         object.__setattr__(self, "precision_signature", arithmetic_signature(self.arithmetic))
 
     def check_precision(self):
-        if arithmetic_signature(self.arithmetic) != self.precision_signature:
-            raise RuntimeError("physical problem precision changed; bind a new snapshot")
+        require_precision(self.arithmetic, self.precision_signature,
+                          subject="physical problem", rebuild="bind the original problem again")
+        self.epsilon.check_precision()
 
     def _coordinate(self, x):
+        self.check_precision()
         x = _finite_scalar(self.arithmetic, x, "physical coordinate")
         if not self.domain[0] <= x <= self.domain[1]:
             raise ValueError("physical coordinate lies outside the domain")
@@ -142,8 +152,10 @@ class BoundFluxProblem:
     def _source(self, callback, x, u):
         x = self._coordinate(x)
         u = _finite_scalar(self.arithmetic, u, "field value")
+        value = callback(x, u, self.arithmetic)
+        self.check_precision()
         return _finite_scalar(
-            self.arithmetic, callback(x, u, self.arithmetic),
+            self.arithmetic, value,
             "physical source value", error_type=OverflowError
         )
 
@@ -163,10 +175,13 @@ class BoundFluxProblem:
             value = wall * self.arithmetic.exp(-x)
         else:
             value = self._initial_guess(x, self.arithmetic)
+        self.check_precision()
         return _finite_scalar(self.arithmetic, value, "initial guess value")
 
     def get_domain(self):
+        self.check_precision()
         return self.domain
 
     def get_boundary_conditions(self):
+        self.check_precision()
         return self.boundary_conditions

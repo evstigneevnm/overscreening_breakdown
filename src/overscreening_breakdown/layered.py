@@ -12,7 +12,7 @@ from numbers import Integral
 from typing import Any, Tuple
 
 from overscreening_breakdown.coefficients import Coefficient, _BoundCoefficient
-from overscreening_breakdown.rational_mapping import arithmetic_signature
+from overscreening_breakdown.arithmetic import arithmetic_signature, require_precision
 
 
 SUPPORTED_INTERFACE_COUNTS = (1, 2, 3, 5, 7, 10)
@@ -153,8 +153,8 @@ class BoundLayeredMaterial:
                 raise ValueError("boundary {} is not a jump at this precision; change neighboring values or use higher precision".format(index+1))
 
     def check_precision(self):
-        if arithmetic_signature(self.arithmetic) != self._signature:
-            raise RuntimeError("arithmetic precision changed; bind the material again")
+        require_precision(self.arithmetic, self._signature,
+                          rebuild="bind the material again")
 
     def _coordinate(self, x):
         self.check_precision()
