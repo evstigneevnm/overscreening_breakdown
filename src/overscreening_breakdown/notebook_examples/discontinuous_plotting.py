@@ -24,20 +24,57 @@ def _samples(value):
     return int(value)
 
 
-def _segments(arithmetic, interfaces, x_max, samples):
+def _range_scalar(arithmetic, value, name):
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError("{} must be a finite real scalar".format(name))
+    try:
+        with np.errstate(over="ignore", invalid="ignore"):
+            native = arithmetic.scalar(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError("{} must be a finite real scalar".format(name)) from error
+    if not arithmetic.isfinite(native):
+        raise ValueError("{} must be a finite real scalar".format(name))
+    return native
+
+
+def _display_limits(left, right, name="plot window"):
+    """Check renderability without replacing native evaluation coordinates."""
+    try:
+        display = (float(left), float(right))
+    except (ValueError, OverflowError) as error:
+        raise ValueError("{} must fit a finite float64 display range".format(name)) from error
+    if not all(np.isfinite(value) for value in display) or not display[0] < display[1]:
+        raise ValueError("{} must have distinct finite bounds in float64 display".format(name))
+    return display
+
+
+def _physical_window(arithmetic, x_min, x_max):
+    left = _range_scalar(arithmetic, x_min, "x_min")
+    right = _range_scalar(arithmetic, x_max, "x_max")
+    if left < 0 or not left < right:
+        raise ValueError("physical plot limits must satisfy 0 <= x_min < x_max")
+    _display_limits(left, right)
+    return left, right
+
+
+def _segments(arithmetic, interfaces, x_max, samples, x_min=0):
     samples = _samples(samples)
-    right = arithmetic.scalar(x_max)
-    if not arithmetic.isfinite(right) or right <= 0:
-        raise ValueError("the plot limit x_max must be finite and positive")
-    zero = arithmetic.scalar(0)
+    start, right = _physical_window(arithmetic, x_min, x_max)
     interfaces = tuple(arithmetic.scalar(value) for value in interfaces)
-    cuts = (zero,)+tuple(value for value in interfaces if zero < value < right)+(right,)
+    cuts = (start,)+tuple(value for value in interfaces if start < value < right)+(right,)
     for left, end in zip(cuts, cuts[1:]):
         # A left piece must not accidentally evaluate the right trace at its
         # final interface. The next piece starts at that interface instead.
         denominator = samples if end in interfaces else samples-1
-        yield [left+(end-left)*arithmetic.scalar(index)/denominator
-               for index in range(samples)]
+        points = [left+(end-left)*arithmetic.scalar(index)/denominator
+                  for index in range(samples)]
+        points[0] = left
+        if denominator == samples-1:
+            points[-1] = end
+        if any(not left <= point <= end or (denominator == samples and point == end)
+               for point in points):
+            raise ValueError("plot samples collapsed at an interface; use higher precision or a wider window")
+        yield points
 
 
 def _display(values):
@@ -54,9 +91,9 @@ def _positive_display(values, arithmetic):
     return display
 
 
-def _guides(axis, interfaces, x_max):
+def _guides(axis, interfaces, x_max, x_min=0):
     for interface in interfaces:
-        if 0 < interface <= x_max:
+        if x_min <= interface <= x_max and interface > 0:
             axis.axvline(float(interface), color="0.65", linestyle=":", linewidth=0.8)
 
 
@@ -85,6 +122,15 @@ def _experiment(result):
     return solution, solution.arithmetic
 
 
+def _tag_solutions(figure, solutions):
+    owners = []
+    for solution in solutions:
+        if all(solution is not owner for owner in owners):
+            owners.append(solution)
+    figure._overscreening_solutions = tuple(owners)
+    return figure
+
+
 def _domain(solution):
     a = solution.arithmetic
     physical = getattr(solution, "physical", None)
@@ -95,14 +141,34 @@ def _domain(solution):
 
 
 def _plot_limit(solution, x_max=None):
+    return _plot_window(solution, x_max=x_max)[1]
+
+
+def _plot_window(solution, x_min=0, x_max=None):
     a = solution.arithmetic
-    _, end = _domain(solution)
-    right = (end if a.isfinite(end) else a.scalar(8)) if x_max is None else a.scalar(x_max)
-    if not a.isfinite(right) or right <= 0:
-        raise ValueError("the plot limit x_max must be finite and positive")
+    start, end = _domain(solution)
+    right = (end if a.isfinite(end) else a.scalar(8)) if x_max is None else x_max
+    left, right = _physical_window(a, x_min, right)
+    if left < start:
+        raise ValueError("the plot limit x_min lies outside the physical domain")
     if a.isfinite(end) and right > end:
         raise ValueError("the plot limit x_max cannot exceed the finite endpoint R")
-    return right
+    return left, right
+
+
+def _axis_limits(value, name, arithmetic):
+    if value is None:
+        return None
+    try:
+        pair = tuple(value) if not isinstance(value, (str, bytes)) else ()
+    except TypeError as error:
+        raise ValueError("{} must contain two finite increasing nonnegative limits".format(name)) from error
+    if len(pair) != 2:
+        raise ValueError("{} must contain two finite increasing nonnegative limits".format(name))
+    left, right = (_range_scalar(arithmetic, item, name) for item in pair)
+    if left < 0 or not left < right:
+        raise ValueError("{} must contain two finite increasing nonnegative limits".format(name))
+    return _display_limits(left, right, name)
 
 
 def _same_domain(first, second):
@@ -149,7 +215,7 @@ def _newton_tolerance_label(result, arithmetic):
     return "Newton absolute residual tolerance = {}".format(display)
 
 
-def plot_material(material, *, x_max="8", samples=60, ax=None, accuracy="standard"):
+def _material_profile(material, x_min, x_max, samples, accuracy):
     """Preview a layer table or declared custom coefficient on a finite window.
 
     The shown window does not determine a solver's physical domain.
@@ -158,38 +224,54 @@ def plot_material(material, *, x_max="8", samples=60, ax=None, accuracy="standar
     if accuracy not in ("standard", "strict_integration", "high_precision"):
         raise ValueError("accuracy must be standard, strict_integration, or high_precision")
     arithmetic = MpmathArithmetic(50) if accuracy == "high_precision" else NumpyArithmetic()
+    left, right = _physical_window(arithmetic, x_min, x_max)
+    _samples(samples)
     description = material.coefficient if isinstance(material, LayeredMaterial) else material
     bind = getattr(description, "bind", None)
     if not callable(bind):
         raise TypeError("provide a LayeredMaterial or a declared Coefficient")
     coefficient = bind(arithmetic)
-    segments = list(_segments(arithmetic, coefficient.interfaces, x_max, samples))
-    if ax is None:
-        figure, axis = plt.subplots(figsize=(7, 3.5))
-    else:
-        axis, figure = ax, ax.figure
+    segments = tuple(_segments(arithmetic, coefficient.interfaces, right, samples, x_min=left))
+    return coefficient, segments, left, right
+
+
+def _draw_material(axis, material, profile):
+    coefficient, segments, left, right = profile
     _draw_pieces(axis, segments, coefficient, label="epsilon(x)")
-    _guides(axis, coefficient.interfaces, arithmetic.scalar(x_max))
+    _guides(axis, coefficient.interfaces, right, left)
+    axis.set_xlim(*_display_limits(left, right))
     count = len(coefficient.interfaces)
     kind = getattr(material, "kind", "custom")
     axis.set_title("{} interface{}: {} material".format(count, "" if count == 1 else "s", kind))
     _finish_axis(axis, ylabel="coefficient epsilon")
+
+
+def plot_material(material, *, x_min=0, x_max="8", samples=60, ax=None, accuracy="standard"):
+    """Preview a material only inside the chosen physical display window."""
+    profile = _material_profile(material, x_min, x_max, samples, accuracy)
+    if ax is None:
+        figure, axis = plt.subplots(figsize=(7, 3.5))
+    else:
+        axis, figure = ax, ax.figure
+    _draw_material(axis, material, profile)
     if ax is None:
         figure.tight_layout()
     return figure
 
 
-def plot_material_gallery(kind="constant", *, x_max="8", samples=40, materials=None):
+def plot_material_gallery(kind="constant", *, x_min=0, x_max="8", samples=40, materials=None):
     """Preview supplied material definitions or the six half-line presets."""
     if materials is None:
         materials = {count: preset_material(count, kind=kind) for count in SUPPORTED_INTERFACE_COUNTS}
     if not isinstance(materials, Mapping) or not materials:
         raise ValueError("materials must be a nonempty mapping of interface counts to definitions")
+    profiles = [_material_profile(material, x_min, x_max, samples, "standard")
+                for material in materials.values()]
     columns = min(3, len(materials))
     rows = (len(materials)+columns-1)//columns
     figure, axes = plt.subplots(rows, columns, figsize=(13 if columns == 3 else 7, 3.25*rows), squeeze=False)
-    for (_, material), axis in zip(materials.items(), axes.flat):
-        plot_material(material, x_max=x_max, samples=samples, ax=axis)
+    for material, profile, axis in zip(materials.values(), profiles, axes.flat):
+        _draw_material(axis, material, profile)
     for axis in tuple(axes.flat)[len(materials):]:
         axis.set_visible(False)
     figure.suptitle("Material presets: {} layers".format(kind))
@@ -197,12 +279,12 @@ def plot_material_gallery(kind="constant", *, x_max="8", samples=40, materials=N
     return figure
 
 
-def plot_experiment(result, *, x_max=None, samples=60):
+def plot_experiment(result, *, x_min=0, x_max=None, samples=60):
     """Show epsilon, potential u, independent field w, and model flux J."""
     solution, arithmetic = _experiment(result)
-    x_max = _plot_limit(solution, x_max)
+    x_min, x_max = _plot_window(solution, x_min, x_max)
     coefficient = solution.physical.epsilon
-    segments = list(_segments(arithmetic, coefficient.interfaces, x_max, samples))
+    segments = list(_segments(arithmetic, coefficient.interfaces, x_max, samples, x_min=x_min))
     figure, axes = plt.subplots(2, 2, figsize=(12, 7), squeeze=False)
     axes = list(axes.flat)
     callbacks = (coefficient, solution.u, solution.w, solution.flux)
@@ -215,23 +297,24 @@ def plot_experiment(result, *, x_max=None, samples=60):
             reference = getattr(case, field)
             _draw_pieces(axis, segments, lambda x, f=reference: f(x, arithmetic),
                          label="known answer", color="black", linestyle="--")
-        _guides(axis, coefficient.interfaces, arithmetic.scalar(x_max))
+        _guides(axis, coefficient.interfaces, x_max, x_min)
+        axis.set_xlim(*_display_limits(x_min, x_max))
         axis.set_title(label)
         _finish_axis(axis, ylabel=label)
     figure.suptitle(_title(result, "material and fields"))
     figure.tight_layout(rect=(0, 0, 1, 0.94))
-    return figure
+    return _tag_solutions(figure, (solution,))
 
 
-def plot_errors(result, *, x_max=None, samples=60):
+def plot_errors(result, *, x_min=0, x_max=None, samples=60):
     """Show native-arithmetic absolute errors against a manufactured case."""
     solution, arithmetic = _experiment(result)
-    x_max = _plot_limit(solution, x_max)
+    x_min, x_max = _plot_window(solution, x_min, x_max)
     case = getattr(result, "case", None)
     if case is None:
         raise ValueError("a known-answer manufactured case is needed for an error plot")
     interfaces = solution.physical.epsilon.interfaces
-    segments = list(_segments(arithmetic, interfaces, x_max, samples))
+    segments = list(_segments(arithmetic, interfaces, x_max, samples, x_min=x_min))
     figure, axes = plt.subplots(1, 3, figsize=(14, 3.7), squeeze=False)
     for axis, field in zip(axes.flat, ("u", "w", "flux")):
         numerical, reference = getattr(solution, field), getattr(case, field)
@@ -253,12 +336,13 @@ def plot_errors(result, *, x_max=None, samples=60):
                        else "Errors outside the log display range are omitted.")
             axis.text(0.5, 0.5, message, transform=axis.transAxes, ha="center", fontsize=8)
         axis.set_yscale("log")
-        _guides(axis, interfaces, arithmetic.scalar(x_max))
+        _guides(axis, interfaces, x_max, x_min)
+        axis.set_xlim(*_display_limits(x_min, x_max))
         axis.set_title("{} error".format("model flux" if field == "flux" else field))
         _finish_axis(axis, ylabel="absolute error")
     figure.suptitle(_title(result, "errors against the known answer"))
     figure.tight_layout(rect=(0, 0, 1, 0.9))
-    return figure
+    return _tag_solutions(figure, (solution,))
 
 
 def _domain_comparison_signature(result):
@@ -274,7 +358,7 @@ def _domain_comparison_signature(result):
     )
 
 
-def plot_domain_comparison(results, *, samples=60):
+def plot_domain_comparison(results, *, x_min=0, x_max=None, samples=60):
     """Compare finite domains at fixed physics, arithmetic, N and solver targets.
 
     Each field is shown only on its own interval. These curves measure domain
@@ -293,36 +377,42 @@ def plot_domain_comparison(results, *, samples=60):
         if signature is not None and current != signature:
             raise ValueError("R-only sensitivity requires fixed physics, material, arithmetic, N and numerical settings")
         signature = current
-        segments = tuple(_segments(a, solution.physical.epsilon.interfaces, end, samples))
-        prepared.append((result, solution, a, end, segments))
+        left, right = _plot_window(solution, x_min, x_max)
+        segments = tuple(_segments(a, solution.physical.epsilon.interfaces, right, samples, x_min=left))
+        prepared.append((result, solution, a, end, segments, left, right))
     figure, axes = plt.subplots(1, 3, figsize=(15, 4.5), squeeze=False)
     interfaces = set()
-    for index, (result, solution, a, end, segments) in enumerate(prepared):
+    for index, (result, solution, a, end, segments, left, right) in enumerate(prepared):
         verified = solution.converged
         label = "{}; {}".format(_resolution_label(solution), "verified" if verified else "unverified partial result")
-        interfaces.update(float(point) for point in solution.physical.epsilon.interfaces)
+        interfaces.update(float(point) for point in solution.physical.epsilon.interfaces
+                          if left <= point <= right)
         for axis, field in zip(axes.flat, ("u", "w", "flux")):
             _draw_pieces(axis, segments, getattr(solution, field), label=label,
                          color="C{}".format(index % 10), linestyle="-" if verified else ":")
-    maximum = max(float(item[3]) for item in prepared)
+    minimum = min(float(item[5]) for item in prepared)
+    maximum = max(float(item[6]) for item in prepared)
     for axis, label in zip(axes.flat, ("potential u", "curvature field w", "model flux J")):
-        _guides(axis, sorted(interfaces), maximum)
+        _guides(axis, sorted(interfaces), maximum, minimum)
+        axis.set_xlim(minimum, maximum)
         axis.set_title(label)
         _finish_axis(axis, ylabel=label)
     first = prepared[0][1]
     figure.suptitle("Domain sensitivity at fixed N={} ({} unknowns)\nR={}; status is shown for each calculation".format(
         first.N, first.unknown_count, ", ".join(_scalar_label(item[3], item[2]) for item in prepared)))
     figure.tight_layout(rect=(0, 0, 1, 0.85))
-    return figure
+    return _tag_solutions(figure, (item[1] for item in prepared))
 
 
-def plot_convergence(result):
+def plot_convergence(result, *, iteration_xlim=None, quadrature_xlim=None):
     """Separate fixed-equation Newton histories from quadrature verification.
 
     Newton segments break at every homotopy parameter and quadrature-plan
     change. Ratios below the horizontal line at one meet the recorded target.
     """
     solution, arithmetic = _experiment(result)
+    iteration_limits = _axis_limits(iteration_xlim, "iteration_xlim", arithmetic)
+    quadrature_limits = _axis_limits(quadrature_xlim, "quadrature_xlim", arithmetic)
     history = getattr(solution, "quadrature_history", ())
     plans = [item.newton_result for item in history if item.newton_result is not None]
     if not plans and getattr(solution, "newton_result", None) is not None:
@@ -407,6 +497,10 @@ def plot_convergence(result):
     quadrature_axis.set_yscale("log")
     quadrature_axis.set_title("Independent numerical integration check")
     _finish_axis(quadrature_axis, xlabel="quadrature points per panel", ylabel="change / target")
+    if iteration_limits is not None:
+        newton_axis.set_xlim(*iteration_limits)
+    if quadrature_limits is not None:
+        quadrature_axis.set_xlim(*quadrature_limits)
     figure.suptitle(_title(result, "numerical checks; values below one pass"))
     figure.tight_layout(rect=(0, 0, 1, 0.9))
-    return figure
+    return _tag_solutions(figure, (solution,))

@@ -42,6 +42,10 @@ class _RealArithmetic:
     def exp(self, value):
         return self.context.exp(value)
 
+    def expm1(self, value):
+        """Return exp(value)-1 without cancellation near zero."""
+        return self.context.expm1(value)
+
     def sinh(self, value):
         return self.context.sinh(value)
 
@@ -56,6 +60,10 @@ class _RealArithmetic:
 
     def log(self, value):
         return self.context.log(value)
+
+    def log1p(self, value):
+        """Return log(1+value) without cancellation near zero."""
+        return self.context.log1p(value)
 
     def sin(self, value):
         return self.context.sin(value)

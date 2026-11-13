@@ -127,6 +127,10 @@ and gmpy mpmath backends (ten Linux jobs). It covers NumPy collocation methods,
 mpmath Newton at 15, 30, 50, 100, and 120 digits, Galerkin assembly/refinement,
 saved solutions, explicit projection, bounded examples, and PDF/inline PNG
 rendering. The tests distinguish spatial accuracy from arithmetic precision.
+Research notebooks may retain saved outputs and enabled experiments. Their CI
+smoke tests select a small, explicit set of cells and apply bounded settings
+in memory; they do not run newly added research cells automatically or rewrite
+the notebook files. Notebook source and structure checks remain enabled.
 Set `MPMATH_NOGMPY=1` before starting Python for the pure backend; leave it
 unset for gmpy. Plots, JUnit reports, logs, and installed dependencies are kept
 as CI artifacts. One job records coverage.

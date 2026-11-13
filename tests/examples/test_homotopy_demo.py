@@ -232,6 +232,8 @@ class HomotopyDemoTests(unittest.TestCase):
                          report_error_table=guide.report_error_table, plot_errors=guide.plot_errors,
                          plot_convergence=guide.plot_convergence, plot_homotopy_path=plot_homotopy_path,
                          plot_homotopy_comparison=plot_homotopy_comparison,
+                         plot_x_min="0", plot_x_max="8",
+                         iteration_xlim=None, quadrature_xlim=None,
                          experiment=sentinel, N_selected=100, N_high_precision=100,
                          run_high_precision_example=True)
         with patch.object(guide, "run_defined_problem", wraps=guide.run_defined_problem) as run, \

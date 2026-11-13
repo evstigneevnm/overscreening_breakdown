@@ -34,6 +34,13 @@ def _title(solution):
         solution.solver_type.capitalize(), solution.N, solution.unknown_count)
 
 
+def _record_solution(figure, solution):
+    owners = getattr(figure, "_overscreening_solutions", ())
+    if all(owner is not solution for owner in owners):
+        figure._overscreening_solutions = tuple(owners)+(solution,)
+    return figure
+
+
 def plot_fields(solution, *, x=None, ax=None):
     """Return three physical-coordinate panels for u, w and physical flux J.
 
@@ -66,7 +73,7 @@ def plot_fields(solution, *, x=None, ax=None):
         axis.grid(True, alpha=0.25)
     figure.suptitle(_title(solution))
     figure.tight_layout(rect=(0, 0, 1, 0.96))
-    return figure
+    return _record_solution(figure, solution)
 
 
 def plot_coefficients(solution, *, ax=None):
@@ -91,4 +98,4 @@ def plot_coefficients(solution, *, ax=None):
         axis.grid(True, alpha=0.25)
     figure.suptitle(_title(solution))
     figure.tight_layout(rect=(0, 0, 1, 0.96))
-    return figure
+    return _record_solution(figure, solution)

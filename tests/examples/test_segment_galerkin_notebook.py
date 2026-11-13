@@ -20,30 +20,38 @@ from overscreening_breakdown.galerkin.finite_solution import FiniteGalerkinSolut
 from overscreening_breakdown.manufactured import finite_segment_case
 from overscreening_breakdown.notebook_examples import discontinuous_galerkin as guide
 from overscreening_breakdown.notebook_examples.segment_galerkin import segment_material, segment_material_table
+from tests.examples.notebook_tools import execute_allowed_cells
 
 
 ROOT = Path(__file__).resolve().parents[2]
 NOTEBOOK = ROOT/"examples/notebooks/segment_execution_example_galerkin_discontinuous.ipynb"
 FLAGS = ("run_n_convergence", "run_r_convergence", "run_high_precision", "run_custom_epsilon",
          "run_all_interfaces", "run_homotopy_demo", "save_results")
-BOUNDED = dict(R="4", N_selected=6, N_linear=6, N_nonlinear=6, verbosity=0,
-               interface_count=3, material_style="constant", layers=None, model="BSK", accuracy="standard",
-               newton_atol_selected="1e-10", newton_atol_linear="1e-10", newton_atol_nonlinear="1e-10",
-               **dict.fromkeys(FLAGS, False))
 PREFIX = {"imports", "experiment-settings", "material-preview", "define-bsk", "define-manufactured"}
 HARD = {"hard-definition", "hard-runs", "hard-stages"}
 CORE_SOLVES = {"selected-solve", "linear-verification", "nonlinear-verification"}
-
-
-class NotebookControls(ast.NodeTransformer):
-    def __init__(self, values):
-        self.values = values
-
-    def visit_Assign(self, node):
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in self.values:
-                node.value = ast.copy_location(ast.Constant(self.values[target.id]), node.value)
-        return self.generic_visit(node)
+CORE_CELL_IDS = (
+    "imports", "experiment-settings", "material-preview", "define-bsk", "define-manufactured",
+    "selected-solve", "selected-plots", "material-gallery", "linear-verification", "linear-errors",
+    "nonlinear-verification", "nonlinear-errors", "export-results",
+)
+OPTIONAL_CELL_IDS = ("n-convergence", "r-convergence", "high-precision", "custom-epsilon",
+                     "all-interface-cases", "hard-definition", "hard-runs", "hard-stages", "hard-plots")
+CELL_CONTROLS = {
+    "experiment-settings": dict(R="4", verbosity=0, interface_count=3, material_style="constant",
+                                 layers=None, model="BSK", accuracy="standard", plot_x_min="0", plot_x_max=None,
+                                 iteration_xlim=None, quadrature_xlim=None),
+    "selected-solve": dict(N_selected=6, newton_atol_selected="1e-10"),
+    "linear-verification": dict(N_linear=6, newton_atol_linear="1e-10"),
+    "nonlinear-verification": dict(N_nonlinear=6, newton_atol_nonlinear="1e-10"),
+    "n-convergence": {"run_n_convergence": False},
+    "r-convergence": {"run_r_convergence": False},
+    "high-precision": {"run_high_precision": False},
+    "custom-epsilon": {"run_custom_epsilon": False},
+    "all-interface-cases": {"run_all_interfaces": False},
+    "hard-definition": {"run_homotopy_demo": False},
+    "export-results": {"save_results": False},
+}
 
 
 class SegmentGalerkinNotebookTests(unittest.TestCase):
@@ -51,25 +59,22 @@ class SegmentGalerkinNotebookTests(unittest.TestCase):
         self.addCleanup(plt.close, "all")
         self.addCleanup(setattr, mp.mp, "prec", mp.mp.prec)
 
-    def execute(self, *, cell_ids=None, skip=(), controls=None):
+    def execute(self, *, cell_ids=None, controls_by_cell=None):
         original = NOTEBOOK.read_bytes()
         notebook = json.loads(original)
-        values = dict(BOUNDED)
-        values.update(controls or {})
+        selected = CORE_CELL_IDS if cell_ids is None else tuple(cell_ids)
+        controls = {name: dict(value) for name, value in CELL_CONTROLS.items() if name in selected}
+        for name, changes in (controls_by_cell or {}).items():
+            controls.setdefault(name, {}).update(changes)
         namespace = {"__name__": "__main__"}
         output = io.StringIO()
         with tempfile.TemporaryDirectory(prefix="overscreening-segment-notebook-", dir="/tmp") as temporary:
             with patch.dict(os.environ, {"OVERSCREENING_OUTPUT_DIR": temporary}), \
                     patch.object(guide, "run_defined_problem", wraps=guide.run_defined_problem) as run, \
                     patch.object(plt, "show"), redirect_stdout(output):
-                for cell in notebook["cells"]:
-                    if (cell["cell_type"] != "code" or cell.get("id") in skip
-                            or (cell_ids is not None and cell.get("id") not in cell_ids)):
-                        continue
-                    source = "\n".join(line for line in "".join(cell["source"]).splitlines()
-                                       if not line.lstrip().startswith("%"))
-                    tree = ast.fix_missing_locations(NotebookControls(values).visit(ast.parse(source)))
-                    exec(compile(tree, str(NOTEBOOK), "exec"), namespace)
+                self.last_execution = execute_allowed_cells(notebook, selected, namespace,
+                                                              controls_by_cell=controls,
+                                                              filename=str(NOTEBOOK))
                 calls = tuple(run.call_args_list)
         self.assertEqual(NOTEBOOK.read_bytes(), original)
         return namespace, calls, output.getvalue()
@@ -126,12 +131,13 @@ class SegmentGalerkinNotebookTests(unittest.TestCase):
             self.assertEqual(solution.u(0), solution.physical.boundary_conditions[0][0])
             self.assertEqual(solution.u(4), solution.physical.boundary_conditions[1][0])
             self.assertTrue(any(call.args[0] is result.problem for call in calls))
-        self.assertTrue(all(namespace[flag] is False for flag in FLAGS))
+        self.assertFalse(namespace["save_results"])
+        self.assertTrue(set(OPTIONAL_CELL_IDS).issubset(self.last_execution.skipped))
 
     def test_disabled_optional_sections_launch_no_solver_work(self):
-        skip = CORE_SOLVES | {"selected-plots", "linear-errors", "nonlinear-errors"}
-        _, calls, _ = self.execute(skip=skip)
+        namespace, calls, _ = self.execute(cell_ids=PREFIX | set(OPTIONAL_CELL_IDS))
         self.assertFalse(calls)
+        self.assertTrue(all(namespace[flag] is False for flag in FLAGS if flag != "save_results"))
 
     def test_all_material_counts_are_scaled_inside_the_finite_interval(self):
         for a in (NumpyArithmetic(), MpmathArithmetic(50)):
@@ -213,8 +219,8 @@ class SegmentGalerkinNotebookTests(unittest.TestCase):
             with self.subTest(mpmath=use_mpmath):
                 namespace, calls, _ = self.execute(
                     cell_ids=PREFIX | HARD,
-                    controls=dict(run_homotopy_demo=True, hard_use_mpmath=use_mpmath,
-                                  use_mpmath_hard=use_mpmath, hard_precision=30, precision_hard=30),
+                    controls_by_cell={"hard-definition": dict(run_homotopy_demo=True,
+                                                               hard_use_mpmath=use_mpmath, hard_precision=30)},
                 )
                 self.assertEqual(len(calls), 3)
                 runs = namespace["hard_results"]

@@ -9,27 +9,236 @@ from overscreening_breakdown.problems.flux import FluxProblem
 _UNSET = object()
 
 
+# Original implementations, retained for reference. The growing exponentials
+# and squared denominator can overflow even when the result is representable.
+# def _gaussian(x, sigma, arithmetic):
+#     # Preserve the model's existing normalization (there is no 1/sigma factor).
+#     half = arithmetic.scalar("0.5")
+#     return arithmetic.exp(-half*(x/sigma)**2)/arithmetic.sqrt(2*arithmetic.pi)
+#
+# def _physical_rhs(x, u, arithmetic, sigma, mu, gamma):
+#     half = arithmetic.scalar("0.5")
+#     numerator = arithmetic.sinh(u) - half*mu*_gaussian(x, sigma, arithmetic)*arithmetic.exp(u)
+#     denominator = 1 + 2*gamma*arithmetic.sinh(half*u)**2
+#     return numerator/denominator
+#
+# def _physical_rhs_u(x, u, arithmetic, sigma, mu, gamma):
+#     # Algebraically the existing analytic derivative, arranged to avoid
+#     # cancellation of cosh(u) terms when gamma=1 and u is large.
+#     cosh = arithmetic.cosh(u)
+#     denominator = 1 - gamma + gamma*cosh
+#     numerator = (2*(gamma + (1-gamma)*cosh)
+#                  + mu*_gaussian(x, sigma, arithmetic)*((gamma-1)*arithmetic.exp(u)-gamma))
+#     return numerator/(2*denominator**2)
+
+
+def _gaussian_exponent(x, sigma, arithmetic):
+    ratio = x/sigma
+    # Multiply by 1/2 first: ratio**2 can overflow while ratio**2/2 is finite.
+    return (arithmetic.scalar("0.5")*ratio)*ratio
+
+
 def _gaussian(x, sigma, arithmetic):
-    # Preserve the model's existing normalization (there is no 1/sigma factor).
-    half = arithmetic.scalar("0.5")
-    return arithmetic.exp(-half*(x/sigma)**2)/arithmetic.sqrt(2*arithmetic.pi)
+    """Existing Gaussian normalization, without a 1/sigma factor."""
+    with np.errstate(over="ignore", under="ignore"):
+        return arithmetic.exp(-_gaussian_exponent(x, sigma, arithmetic))/arithmetic.sqrt(
+            2*arithmetic.pi)
+
+
+def _signed_logsum(terms, arithmetic):
+    """Return sign and log magnitude of a short signed exponential sum.
+
+    Cancel the largest terms first so a small surviving term is not lost
+    before two equal and opposite leading terms cancel.
+    """
+    terms = sorted(((sign, value) for sign, value in terms if sign and value != -np.inf),
+                   key=lambda term: term[1], reverse=True)
+    sign, value = 0, None
+    for other_sign, other in terms:
+        if not sign:
+            sign, value = other_sign, other
+        elif value == other and sign != other_sign:
+            sign, value = 0, None
+        else:
+            if value < other:
+                sign, other_sign = other_sign, sign
+                value, other = other, value
+            difference = other-value
+            if sign == other_sign:
+                value += arithmetic.log1p(arithmetic.exp(difference))
+            else:
+                value += arithmetic.log(-arithmetic.expm1(difference))
+    return sign, value
+
+
+def _logterm(coefficient, exponent, arithmetic):
+    if coefficient == 0:
+        return 0, None
+    return (1 if coefficient > 0 else -1,
+            arithmetic.log(abs(coefficient))+exponent)
+
+
+def _exp_logsum(terms, shift, arithmetic):
+    sign, value = _signed_logsum(terms, arithmetic)
+    return arithmetic.scalar(0) if not sign else sign*arithmetic.exp(value+shift)
+
+
+def _bsk_log_value(u, b, mu, exponent, normalizer, gamma, arithmetic, derivative):
+    """Float64 fallback when individual scaled factors leave its range."""
+    a = arithmetic
+    size = abs(u)
+    zero = a.scalar(0)
+    log_two = a.log(a.scalar(2))
+    if gamma == 0:
+        # The unsaturated source may genuinely overflow. Combining 1-b first
+        # also retains the decaying solution when that coefficient is zero.
+        terms = [_logterm(1-b, u, a), (1 if derivative else -1, -u)]
+        return _exp_logsum(terms, -log_two, a)
+
+    k = -a.expm1(-size)
+    log_gamma = a.log(gamma)
+    if k == 0:
+        return 1-b/2 if derivative else -b/2
+    log_k = a.log(k)
+    _, log_d = _signed_logsum(
+        [(1, log_gamma+2*log_k), (1, log_two-size)], a)
+    if not derivative:
+        if b == 0 and mu != 0:
+            # A Gaussian that underflows before division can still matter.
+            log_b = a.log(abs(mu))-exponent-a.log(normalizer)
+            terms = [(1, u-size), (-1, -u-size),
+                     (-1 if mu > 0 else 1, log_b+u-size)]
+        else:
+            terms = [_logterm(1-b, u-size, a), (-1, -u-size)]
+        return _exp_logsum(terms, -log_d, a)
+
+    if gamma > 2 and size < 1:
+        t = a.exp(-size)
+        p = k*(1+t)
+        base = (2-b)-p if u >= 0 else (2-b)-(1-b)*p
+        correction = b-k if u >= 0 else -(k+b*t)
+        terms = [_logterm(base, zero, a),
+                 _logterm(correction, log_gamma+log_k, a)]
+    elif size < 1:
+        t = a.exp(-size)
+        p = k*(1+t)
+        base = (2-b)-p if u >= 0 else (2-b)-(1-b)*p
+        terms = []
+        if gamma != 1:
+            sign_base, log_base = _logterm(base, a.log(abs(1-gamma)), a)
+            terms.append(((1 if gamma < 1 else -1)*sign_base, log_base))
+        terms.append(_logterm(2-b, log_gamma-size, a))
+    else:
+        # Expanded factored derivative: at gamma=1 the first two terms
+        # vanish identically, retaining its much smaller exponential tail.
+        log_terms = [(1-b, zero if u >= 0 else -2*size),
+                     (a.scalar(1), -2*size if u >= 0 else zero)]
+        terms = []
+        if gamma != 1:
+            sign_g = 1 if gamma < 1 else -1
+            log_g = a.log(abs(1-gamma))
+            for coefficient, power in log_terms:
+                term_sign, term_log = _logterm(coefficient, log_g+power, a)
+                terms.append((sign_g*term_sign, term_log))
+        terms.append(_logterm(2-b, log_gamma-size, a))
+    return _exp_logsum(terms, log_two-size-2*log_d, a)
+
+
+def _bsk_scalar(x, u, arithmetic, sigma, mu, gamma, derivative):
+    """Evaluate f or f_u using t=exp(-abs(u)) and d=gamma*(1-t)^2+2t.
+
+    For positive u, f=((1-b)-t²)/d; for negative u, f=((1-b)*t²-1)/d.
+    The derivative is 2t*C/d², with C=(1-gamma)*A+gamma*t*(2-b),
+    A=1+t²-b for positive u and A=1+(1-b)*t² for negative u.
+    Equivalent near-zero forms avoid subtracting rounded constant terms.
+    """
+    a = arithmetic
+    x, u = a.scalar(x), a.scalar(u)
+    is_mp = a.use_mpmath
+    # Suppress only intermediates covered by the scaled/logarithmic fallback.
+    # A genuinely nonfinite final value is rejected by BoundFluxProblem.
+    with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
+        normalizer = a.sqrt(2*a.pi)
+        exponent = _gaussian_exponent(x, sigma, a) if mu else a.scalar(0)
+        gaussian = a.exp(-exponent) if mu else a.scalar(0)
+        b = (mu/normalizer)*gaussian
+        if not is_mp and mu and (gaussian < np.finfo(np.float64).tiny
+                                 or b == 0 or not np.isfinite(b)):
+            # Multiplication can rescue even a *subnormal* Gaussian, after
+            # its relative precision has already been lost. Rebuild it first.
+            b = (1 if mu > 0 else -1)*a.exp(a.log(abs(mu))-exponent-a.log(normalizer))
+        size = abs(u)
+        if gamma == 0:
+            if is_mp or size < 300:
+                if size < 1:
+                    # These combinations also retain f_u when b=2 and the
+                    # two constant terms cancel at an arbitrarily small u.
+                    if derivative:
+                        value = (1-b/2)*a.cosh(u)-(b/2)*a.sinh(u)
+                    else:
+                        value = (1-b/2)*a.sinh(u)-(b/2)*a.cosh(u)
+                else:
+                    # Combine the growing coefficients before exponentiating:
+                    # b=1 leaves a decaying field, even in arbitrary precision.
+                    value = ((1-b)/2)*a.exp(u)+(1 if derivative else -1)*a.exp(-u)/2
+                if is_mp or np.isfinite(value):
+                    return value
+            return _bsk_log_value(u, b, mu, exponent, normalizer, gamma, a, derivative)
+
+        if not is_mp and size > 700:
+            return _bsk_log_value(u, b, mu, exponent, normalizer, gamma, a, derivative)
+        t = a.exp(-size)
+        k = -a.expm1(-size)
+        d = (gamma*k)*k+2*t
+        p = k*(1+t)
+        if not derivative:
+            if size < 1:
+                numerator = p-b if u >= 0 else -p-b*t*t
+            else:
+                numerator = (1-b)-t*t if u >= 0 else (1-b)*t*t-1
+            value = numerator/d
+            resolved = numerator != 0 and not (size > 350 and b == 1)
+        else:
+            if gamma > 2 and size < 1:
+                base = (2-b)-p if u >= 0 else (2-b)-(1-b)*p
+                correction = b-k if u >= 0 else -(k+b*t)
+                factor = base+(gamma*k)*correction
+            else:
+                if size < 1:
+                    base = (2-b)-p if u >= 0 else (2-b)-(1-b)*p
+                else:
+                    base = (1-b)+t*t if u >= 0 else 1+(1-b)*t*t
+                factor = (1-gamma)*base+(gamma*t)*(2-b)
+            # Since d >= 2t, the first ratio is bounded by one. Never form d².
+            ratio = t/d
+            value = (2*ratio)*(factor/d)
+            # A tiny ratio can be amplified by the other factor. Reconstruct
+            # from logs before it loses digits or underflows to a false zero.
+            resolved = (factor != 0 and value != 0
+                        and (is_mp or ratio >= np.finfo(np.float64).tiny))
+        if is_mp or (np.isfinite(value) and resolved):
+            return value
+        return _bsk_log_value(u, b, mu, exponent, normalizer, gamma, a, derivative)
+
+
+def _bsk_values(x, u, arithmetic, sigma, mu, gamma, derivative):
+    if np.ndim(x) or np.ndim(u):
+        # The public physical interface is scalar; legacy classes also accept
+        # arrays and broadcast coordinates against fields in either backend.
+        evaluate = np.vectorize(
+            lambda xi, ui: _bsk_scalar(xi, ui, arithmetic, sigma, mu, gamma, derivative),
+            otypes=[object if arithmetic.use_mpmath else np.float64],
+        )
+        return evaluate(x, u)
+    return _bsk_scalar(x, u, arithmetic, sigma, mu, gamma, derivative)
 
 
 def _physical_rhs(x, u, arithmetic, sigma, mu, gamma):
-    half = arithmetic.scalar("0.5")
-    numerator = arithmetic.sinh(u) - half*mu*_gaussian(x, sigma, arithmetic)*arithmetic.exp(u)
-    denominator = 1 + 2*gamma*arithmetic.sinh(half*u)**2
-    return numerator/denominator
+    return _bsk_values(x, u, arithmetic, sigma, mu, gamma, False)
 
 
 def _physical_rhs_u(x, u, arithmetic, sigma, mu, gamma):
-    # Algebraically the existing analytic derivative, arranged to avoid
-    # cancellation of cosh(u) terms when gamma=1 and u is large.
-    cosh = arithmetic.cosh(u)
-    denominator = 1 - gamma + gamma*cosh
-    numerator = (2*(gamma + (1-gamma)*cosh)
-                 + mu*_gaussian(x, sigma, arithmetic)*((gamma-1)*arithmetic.exp(u)-gamma))
-    return numerator/(2*denominator**2)
+    return _bsk_values(x, u, arithmetic, sigma, mu, gamma, True)
 
 class overscreening_breakdown(object):
     def __init__(self, *, epsilon=1):
@@ -60,8 +269,11 @@ class overscreening_breakdown(object):
         self.__pi = self.__use_mpmath.pi
         self.__arithmetic = SimpleNamespace(
             scalar=self.__use_mpmath.mpf if self.__use_mp_math else np.float64,
-            exp=self.__exp, sinh=self.__sinh, cosh=self.__cosh,
-            sqrt=self.__sqrt, pi=self.__pi,
+            use_mpmath=self.__use_mp_math,
+            exp=self.__use_mpmath.exp, expm1=self.__use_mpmath.expm1,
+            log=self.__use_mpmath.log, log1p=self.__use_mpmath.log1p,
+            sinh=self.__use_mpmath.sinh, cosh=self.__use_mpmath.cosh,
+            sqrt=self.__use_mpmath.sqrt, pi=self.__pi,
         )
         return self
 

@@ -17,6 +17,7 @@ import numpy as np
 from overscreening_breakdown import load_solution
 from examples import bsk, collocation, galerkin, restart_and_projection, variable_epsilon
 from examples._common import sampled_error
+from tests.examples.notebook_tools import source_text, validate_research_notebook
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -151,7 +152,7 @@ class UserExampleTests(unittest.TestCase):
                 self.assertTrue(data.startswith(b"%PDF-"))
                 self.assertGreater(len(data), 1000)
 
-    def test_notebooks_have_clean_outputs_canonical_imports_and_no_directory_magic(self):
+    def test_notebooks_preserve_valid_research_outputs_with_canonical_imports(self):
         notebooks = sorted((ROOT/"examples"/"notebooks").glob("*.ipynb"))
         self.assertEqual({path.name for path in notebooks}, {
             "execution_example.ipynb", "execution_example_galerkin_discontinuous.ipynb",
@@ -162,12 +163,11 @@ class UserExampleTests(unittest.TestCase):
         self.assertFalse(list((ROOT/"examples").glob("*.ipynb")))
         for path in notebooks:
             notebook = json.loads(path.read_text())
+            validate_research_notebook(notebook)
             sources = []
             for cell in notebook["cells"]:
                 if cell["cell_type"] == "code":
-                    self.assertEqual(cell.get("outputs"), [])
-                    self.assertIsNone(cell.get("execution_count"))
-                    code = "".join(cell.get("source", []))
+                    code = source_text(cell["source"])
                     ast.parse("\n".join(line for line in code.splitlines()
                                         if not line.lstrip().startswith("%")))
                     sources.append(code)
@@ -202,12 +202,11 @@ class UserExampleTests(unittest.TestCase):
                     self.assertNotIn("verbose=", source)
         legacy_path = ROOT/"experiments"/"notebooks"/"legacy_boundary_experiments.ipynb"
         legacy = json.loads(legacy_path.read_text())
+        validate_research_notebook(legacy)
         legacy_source = []
         for cell in legacy["cells"]:
             if cell["cell_type"] == "code":
-                self.assertEqual(cell.get("outputs"), [])
-                self.assertIsNone(cell.get("execution_count"))
-                code = "".join(cell["source"])
+                code = source_text(cell["source"])
                 ast.parse("\n".join(line for line in code.splitlines()
                                     if not line.lstrip().startswith("%")))
                 legacy_source.append(code)

@@ -93,6 +93,13 @@ quadrature plan. Tightening Newton tolerance or arithmetic precision does not
 replace increasing N. Increasing R changes the physical boundary-value
 problem and should be studied separately.
 
+For a display window, use `plot_experiment(result, x_min="1", x_max="3")`
+with bounds inside that result's `[0,R]`. `x_max=None` uses its actual right
+endpoint, including when different optional cases have different R values.
+The notebook exposes these plot settings explicitly. Convergence plots show
+Newton iterations and quadrature order, with independent `iteration_xlim`
+and `quadrature_xlim` controls; neither axis is the physical coordinate x.
+
 Snapshots use a distinct finite Petrov basis identifier, affine mapping,
 interval endpoints, two-field layout, precision, and quadrature metadata.
 Loading requires the original physical description; executable callbacks are

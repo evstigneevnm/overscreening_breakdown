@@ -9,6 +9,23 @@ and `physical_rhs_u(x, u)`, the unscaled source and its analytic derivative.
 Physical callbacks never take a continuation parameter. The model's Gaussian
 normalization is preserved.
 
+BSK evaluation uses scaled exponentials for both the source and its analytic
+derivative. Writing `b = mu*g_sigma(x)`, `t = exp(-abs(u))`, and
+`d = gamma*(1-t)**2 + 2*t`, the source for positive `gamma` is
+`((1-b)-t**2)/d` when `u >= 0`, and `((1-b)*t**2-1)/d` otherwise.
+Small differences near zero use `expm1`; the derivative is factored separately
+to retain small nonzero values, including at `gamma=1`. Large `gamma` uses a
+cancellation-aware derivative near zero. Float64 evaluation falls back to
+signed logarithmic sums when a scaled intermediate would lose a representable
+result, and combines the Gaussian with `mu` if the Gaussian alone underflows.
+The unsaturated case `gamma=0` has a separate evaluation, including exact
+cancellation of its growing exponential coefficient. Genuine float64
+underflow may return zero, and a genuinely nonfinite source or derivative
+still raises `OverflowError` through the bound physical interface. The same
+kernels serve collocation and Galerkin on both domains and retain the
+solver-owned mpmath precision. Original formulas remain commented beside the
+replacements in `problems/bsk.py` for reference.
+
 Bind a snapshot of a problem to arithmetic owned by its eventual solver:
 
 ```python
@@ -688,6 +705,48 @@ their spatial error. The
 [guided notebook](../examples/notebooks/execution_example_galerkin_discontinuous.ipynb)
 separates solve, integration, and resolution checks and includes an arbitrary
 piecewise-smooth callback example.
+
+Notebook cases keep independent results and figure variables. The selected
+case, larger-potential BSK case, and extreme mpmath case have separate controls;
+changing one does not replace another case's result or numerical settings.
+`notebook_examples.cases.CaseArtifacts` bundles a named experiment with its
+figures and optional resolution comparison. `export_cases` writes each bundle
+to its own named directory, recording its case identifier in `settings.json`.
+Guided field, error, convergence, and comparison figures, along with public
+field/coefficient plots, retain their source-solution identities. Export rejects figures from unrelated
+solutions before writing files. Comparison figures record all source owners;
+untagged material previews and custom figures remain the caller's
+responsibility.
+
+Research notebooks may contain execution counts, saved outputs, and enabled
+optional studies. CI validates their source and structure, then executes an
+explicit list of core cells using small settings applied only in memory.
+Extra research cells are not included implicitly. Separate tests exercise
+optional cases with bounded configurations, including disabled-case guards
+and export consistency. Neither test execution nor source validation clears
+research outputs or resets scientific settings.
+
+Physical plot windows are explicit and do not change the solved problem:
+
+```python
+plot_experiment(experiment, x_min="0", x_max="50")
+plot_errors(linear_check, x_min="2", x_max="20")
+plot_convergence(experiment, iteration_xlim=(0, 30), quadrature_xlim=(4, 128))
+```
+
+`x_min` and `x_max` select model coordinates for field, error, material, and
+homotopy-comparison plots. Half-line field plots default to `[0,8]`; finite
+field plots default to their actual `[0,R]`. Finite windows must stay inside
+the particular solution's domain. Sampling remains in the solution's native
+arithmetic and splits at material interfaces; only display data use float64.
+The guided notebooks expose editable plot bounds beside their settings.
+
+Convergence figures have different horizontal axes: attempted Newton
+iterations and quadrature points per panel. Their independent
+`iteration_xlim` and `quadrature_xlim` arguments default to `None` for automatic
+limits. These zoom the display without discarding stored history. Display
+settings do not rerun the solver or change full-domain error tables, quadrature
+verification, or the separately configured export sampling window.
 
 The native catalog retains the physical equations and evaluates constants using
 the supplied arithmetic. This corrects historical rounded decimal/trigonometric

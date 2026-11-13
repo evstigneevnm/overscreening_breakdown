@@ -50,6 +50,16 @@ class ArithmeticTests(unittest.TestCase):
                         high.scalar("1e-118"))
         self.assertEqual(NumpyArithmetic().scalar(decimal), 1)
 
+    def test_small_exponential_and_logarithmic_differences_use_owner_precision(self):
+        for arithmetic in (NumpyArithmetic(), MpmathArithmetic(30), MpmathArithmetic(120)):
+            for text in ("1e-100", "-1e-100"):
+                with self.subTest(backend=arithmetic.backend, dps=arithmetic.dps, value=text):
+                    x = arithmetic.scalar(text)
+                    result = arithmetic.log1p(arithmetic.expm1(x))
+                    self.assertIsInstance(result, type(x))
+                    self.assertNotEqual(result, 0)
+                    self.assertLess(abs(result/x-1), arithmetic.scalar("1e-14"))
+
     def test_owned_precisions_are_independent_of_global_context(self):
         previous_dps = mp.mp.dps
         low = MpmathArithmetic(30)

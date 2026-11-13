@@ -10,8 +10,8 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 from overscreening_breakdown.notebook_examples.discontinuous_plotting import (
-    _display, _draw_pieces, _experiment, _finish_axis, _guides, _plot_limit,
-    _resolution_label, _same_domain, _segments, _title,
+    _display, _display_limits, _draw_pieces, _experiment, _finish_axis, _guides, _plot_window,
+    _resolution_label, _same_domain, _segments, _tag_solutions, _title,
 )
 
 
@@ -83,10 +83,10 @@ def plot_homotopy_path(experiment):
     _finish_axis(axis, xlabel="stage attempt within each quadrature plan", ylabel="homotopy parameter q")
     figure.suptitle(_title(experiment, "accepted continuation path and rejected trials"))
     figure.tight_layout(rect=(0, 0, 1, 0.88))
-    return figure
+    return _tag_solutions(figure, (experiment.solution,))
 
 
-def plot_homotopy_comparison(results, *, x_max=None, samples=60):
+def plot_homotopy_comparison(results, *, x_min=0, x_max=None, samples=60):
     """Compare u, w, and model flux for labelled experiment results.
 
     A failed solve is explicitly labelled as an unverified partial result and
@@ -101,16 +101,17 @@ def plot_homotopy_comparison(results, *, x_max=None, samples=60):
         if first is not None and not _same_domain(first, solution):
             raise ValueError("continuation comparisons require matching physical domains")
         first = solution if first is None else first
-        right = _plot_limit(solution, x_max)
-        segments = tuple(_segments(arithmetic, solution.physical.epsilon.interfaces, right, samples))
-        prepared.append((label, result, solution, arithmetic, right, segments))
+        left, right = _plot_window(solution, x_min, x_max)
+        segments = tuple(_segments(arithmetic, solution.physical.epsilon.interfaces,
+                                   right, samples, x_min=left))
+        prepared.append((label, result, solution, arithmetic, right, segments, left))
     figure, axes = plt.subplots(1, 3, figsize=(15, 4.3), squeeze=False)
     axes = tuple(axes.flat)
     interfaces, resolutions = set(), []
     reference_result = None
-    for index, (label, result, solution, arithmetic, right, segments) in enumerate(prepared):
+    for index, (label, result, solution, arithmetic, right, segments, left) in enumerate(prepared):
         coefficient = solution.physical.epsilon
-        interfaces.update(float(value) for value in coefficient.interfaces)
+        interfaces.update(float(value) for value in coefficient.interfaces if left <= value <= right)
         size = _resolution_label(solution)
         if size not in resolutions:
             resolutions.append(size)
@@ -123,18 +124,21 @@ def plot_homotopy_comparison(results, *, x_max=None, samples=60):
                          color="C{}".format(index % 10), linestyle="-" if verified else ":")
     if reference_result is not None:
         solution, arithmetic = _experiment(reference_result)
+        left, right = _plot_window(solution, x_min, x_max)
         segments = tuple(_segments(arithmetic, solution.physical.epsilon.interfaces,
-                                   _plot_limit(solution, x_max), samples))
+                                   right, samples, x_min=left))
         for axis, field in zip(axes, ("u", "w", "flux")):
             callback = getattr(reference_result.case, field)
             _draw_pieces(axis, segments, lambda x, f=callback: f(x, arithmetic),
                          label="known answer", color="black", linestyle="--")
     labels = ("potential u", "curvature field w", "model flux J")
     for axis, label in zip(axes, labels):
-        _guides(axis, sorted(interfaces), float(prepared[0][4]))
+        left, right = prepared[0][6], prepared[0][4]
+        _guides(axis, sorted(interfaces), float(right), float(left))
+        axis.set_xlim(*_display_limits(left, right))
         axis.set_title(label)
         _finish_axis(axis, ylabel=label)
     resolution = ", ".join(resolutions)
     figure.suptitle("Continuation comparison: {}\nVerification status is shown for each calculation".format(resolution))
     figure.tight_layout(rect=(0, 0, 1, 0.86))
-    return figure
+    return _tag_solutions(figure, (item[2] for item in prepared))

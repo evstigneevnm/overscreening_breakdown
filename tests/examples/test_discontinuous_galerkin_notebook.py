@@ -20,6 +20,7 @@ from overscreening_breakdown import BSKProblem, load_solution
 from overscreening_breakdown.coefficients import Coefficient
 from overscreening_breakdown.layered import LayeredMaterial, preset_material
 from overscreening_breakdown.notebook_examples import discontinuous_galerkin as guide
+from tests.examples.notebook_tools import code_tree, execute_allowed_cells
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,44 +30,51 @@ NUMPY_ATOL = "1e-10"
 MPMATH_ATOL = "1e-35"
 SMALL_NUMERICS = dict(quadrature_order=20, quadrature_atol="1e-8",
                       quadrature_rtol="1e-8")
-OPTIONAL_SOLVE_FLAGS = frozenset(("run_resolution_check", "run_high_precision_example",
-                                  "run_custom_function_example", "run_all_cases",
-                                  "run_linear_convergence", "run_nonlinear_convergence",
-                                  "run_homotopy_demo"))
-# Keep the core CI run small even when a user saves a notebook after trying
-# larger resolutions. These replacements apply only to its in-memory AST.
-BOUNDED_RESOLUTIONS = {"N_selected": 8, "N_linear": 8, "N_nonlinear": 8}
-BOUNDED_INPUTS = dict(layers=None, interface_count=3, material_style="constant", accuracy="standard",
-                      model="BSK", delta="1", wall_potential="0.05", gamma="0.5", sigma="2", mu="0.1",
-                      beta_nonlinear="0.125", newton_atol_selected="1e-10",
-                      newton_atol_linear="1e-10", newton_atol_nonlinear="1e-10")
+CORE_CELL_IDS = (
+    "setup", "experiment-inputs", "material-preview", "bsk-problem-definition",
+    "linear-problem-definition", "nonlinear-problem-definition", "selected-experiment",
+    "selected-plots", "material-gallery", "linear-verification", "linear-relative-errors",
+    "nonlinear-verification", "nonlinear-relative-errors", "export",
+)
+EXTRA_RUN_IDS = ("b920119c-607f-47b3-93a4-9d2c28e91b46", "8606a13e-edc5-443c-8ecb-3ea5035e761f")
+EXTRA_PLOT_IDS = ("4c070641-4c47-4367-a420-00909d5bd4b6", "5ae767a0-47a8-425c-94c1-a440006d0ed0")
+CORE_CONTROLS = {
+    "experiment-inputs": dict(layers=None, interface_count=3, material_style="constant", accuracy="standard",
+                               model="BSK", delta="1", wall_potential=0.05, gamma="0.5", sigma="2", mu="0.1",
+                               verbosity=0, plot_x_min="0", plot_x_max="8",
+                               iteration_xlim=None, quadrature_xlim=None),
+    "nonlinear-problem-definition": {"beta_nonlinear": "0.125"},
+    "selected-experiment": {"N_selected": 8, "newton_atol_selected": "1e-10"},
+    "linear-verification": {"N_linear": 8, "newton_atol_linear": "1e-10"},
+    "nonlinear-verification": {"N_nonlinear": 8, "newton_atol_nonlinear": "1e-10"},
+    "export": {"save_results": True},
+}
 
 
 def notebook_code(source):
-    """Parse code without IPython magics; the inline backend has a separate test."""
-    return ast.parse("\n".join(line for line in source.splitlines()
-                               if not line.lstrip().startswith("%")))
-
-
-class BoundedNotebookRun(ast.NodeTransformer):
-    """Disable optional solves in memory, preserving the user's saved notebook."""
-
-    def visit_Assign(self, node):
-        if any(isinstance(target, ast.Name) and target.id in OPTIONAL_SOLVE_FLAGS
-               for target in node.targets):
-            node.value = ast.copy_location(ast.Constant(False), node.value)
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in BOUNDED_RESOLUTIONS:
-                node.value = ast.copy_location(ast.Constant(BOUNDED_RESOLUTIONS[target.id]), node.value)
-            if isinstance(target, ast.Name) and target.id in BOUNDED_INPUTS:
-                node.value = ast.copy_location(ast.Constant(BOUNDED_INPUTS[target.id]), node.value)
-        return self.generic_visit(node)
+    return code_tree(source)
 
 
 class DiscontinuousGalerkinWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.addCleanup(plt.close, "all")
         self.addCleanup(setattr, mp.mp, "prec", mp.mp.prec)
+
+    def execute_notebook(self, cell_ids, controls):
+        original = NOTEBOOK.read_bytes()
+        notebook = json.loads(original)
+        temporary = tempfile.TemporaryDirectory(prefix="overscreening-layered-notebook-", dir="/tmp")
+        self.addCleanup(temporary.cleanup)
+        namespace = {"__name__": "__main__", "resolution_check": None}
+        with patch.dict(os.environ, {"OVERSCREENING_OUTPUT_DIR": temporary.name}), \
+                patch.object(plt, "show"), patch("IPython.display.display"), \
+                patch.object(guide, "run_defined_problem", wraps=guide.run_defined_problem) as runs, \
+                redirect_stdout(io.StringIO()):
+            report = execute_allowed_cells(notebook, cell_ids, namespace,
+                                             controls_by_cell=controls, filename=str(NOTEBOOK))
+            calls = tuple(runs.call_args_list)
+        self.assertEqual(NOTEBOOK.read_bytes(), original)
+        return namespace, calls, report, Path(temporary.name)
 
     def test_basis_resolution_is_required_and_invalid_values_fail_before_solving(self):
         material = preset_material(1)
@@ -509,48 +517,77 @@ class DiscontinuousGalerkinWorkflowTests(unittest.TestCase):
                         .issubset(definitions))
 
     def test_notebook_core_experiments_execute_without_modifying_saved_user_work(self):
-        original = NOTEBOOK.read_bytes()
-        notebook = json.loads(original)
         directory_before = Path.cwd()
-        with tempfile.TemporaryDirectory(prefix="overscreening-layered-notebook-", dir="/tmp") as temporary:
-            namespace = {"__name__": "__main__"}
-            with patch.dict(os.environ, {"OVERSCREENING_OUTPUT_DIR": temporary}), patch.object(
-                plt, "show"
-            ), patch("IPython.display.display"), patch.object(
-                guide, "run_defined_problem", wraps=guide.run_defined_problem
-            ) as runs, redirect_stdout(io.StringIO()):
-                for cell in notebook["cells"]:
-                    if cell["cell_type"] != "code":
-                        continue
-                    tree = notebook_code("".join(cell["source"]))
-                    # Optional switches may have been enabled in a saved user
-                    # session. This transformation affects only the test AST.
-                    bounded = ast.fix_missing_locations(BoundedNotebookRun().visit(tree))
-                    exec(compile(bounded, str(NOTEBOOK), "exec"), namespace)
-            self.assertEqual(runs.call_count, 3, "The core demonstration should remain bounded")
-            for call in runs.call_args_list:
-                self.assertIn("N", call.kwargs)
-                self.assertIn("newton_atol", call.kwargs)
-                advanced = call.kwargs.get("numerical") or {}
-                self.assertFalse(set(advanced).intersection(("N", "tolerance", "newton_atol")))
-            self.assertTrue(all(namespace[name] is False for name in OPTIONAL_SOLVE_FLAGS))
-            self.assertTrue(all(namespace[name] == value for name, value in BOUNDED_RESOLUTIONS.items()))
-            self.assertTrue(all(namespace[name] == value for name, value in BOUNDED_INPUTS.items()))
-            experiments = [value for value in namespace.values()
-                           if isinstance(value, guide.ExperimentResult)]
-            models = {result.model for result in experiments}
-            self.assertTrue({"BSK", "manufactured_linear", "manufactured_nonlinear"}.issubset(models))
-            self.assertTrue(all(result.solution.converged for result in experiments))
-            self.assertTrue(all(result.settings["numerical"]["N"] == result.solution.N
-                                for result in experiments))
-            for result, problem_name in ((namespace["experiment"], "selected_problem"),
-                                         (namespace["linear_check"], "linear_problem"),
-                                         (namespace["nonlinear_check"], "nonlinear_problem")):
-                self.assertIs(result.problem, namespace[problem_name])
-            outputs = Path(temporary)
-            for filename in ("settings.json", "solution.json", "profiles.csv"):
-                self.assertEqual(len(list(outputs.rglob(filename))), 3)
-            self.assertGreaterEqual(len(list(outputs.rglob("*.pdf"))), 4)
+        namespace, calls, report, outputs = self.execute_notebook(CORE_CELL_IDS, CORE_CONTROLS)
+        self.assertEqual(len(calls), 3, "The explicit core selection must remain bounded")
+        self.assertTrue(set(EXTRA_RUN_IDS+EXTRA_PLOT_IDS).issubset(report.skipped))
+        self.assertNotIn("high-precision-example", report.executed)
+        for call in calls:
+            self.assertIn("N", call.kwargs)
+            self.assertIn("newton_atol", call.kwargs)
+            advanced = call.kwargs.get("numerical") or {}
+            self.assertFalse(set(advanced).intersection(("N", "tolerance", "newton_atol")))
+        self.assertFalse(namespace["run_large_bsk"] or namespace["run_extreme_bsk_mpmath"])
+        cases = namespace["notebook_cases"]
+        self.assertEqual(set(cases), {"selected", "linear-check", "nonlinear-check"})
+        self.assertTrue(all(case.experiment.solution.converged for case in cases.values()))
+        for result, problem_name in ((namespace["experiment"], "selected_problem"),
+                                     (namespace["linear_check"], "linear_problem"),
+                                     (namespace["nonlinear_check"], "nonlinear_problem")):
+            self.assertIs(result.problem, namespace[problem_name])
+            self.assertEqual(result.solution.N, 8)
+        for filename in ("settings.json", "solution.json", "profiles.csv"):
+            self.assertEqual(len(list(outputs.rglob(filename))), 3)
+        self.assertGreaterEqual(len(list(outputs.rglob("*.pdf"))), 4)
         self.assertEqual(Path.cwd(), directory_before)
-        self.assertEqual(NOTEBOOK.read_bytes(), original)
+
+    def test_disabled_extra_cells_and_their_plots_perform_no_solves(self):
+        cells = ("setup", "experiment-inputs", "material-preview", "bsk-problem-definition")+EXTRA_RUN_IDS+EXTRA_PLOT_IDS
+        controls = {name: value for name, value in CORE_CONTROLS.items() if name in cells}
+        controls.update({EXTRA_RUN_IDS[0]: {"run_large_bsk": False},
+                         EXTRA_RUN_IDS[1]: {"run_extreme_bsk_mpmath": False}})
+        namespace, calls, _, _ = self.execute_notebook(cells, controls)
+        self.assertFalse(calls)
+        self.assertIsNone(namespace["bsk_large_experiment"])
+        self.assertIsNone(namespace["bsk_extreme_experiment"])
+        self.assertEqual(namespace["bsk_large_figures"], {})
+        self.assertEqual(namespace["bsk_extreme_figures"], {})
+        self.assertEqual(namespace["notebook_cases"], {})
+
+    def test_small_enabled_extras_keep_results_figures_and_exported_cases_together(self):
+        cells = CORE_CELL_IDS+EXTRA_RUN_IDS+EXTRA_PLOT_IDS
+        controls = {name: dict(value) for name, value in CORE_CONTROLS.items()}
+        controls["experiment-inputs"]["wall_potential"] = 0.001
+        controls[EXTRA_RUN_IDS[0]] = dict(run_large_bsk=True, N_large=8, newton_atol_large="1e-10")
+        controls[EXTRA_RUN_IDS[1]] = dict(run_extreme_bsk_mpmath=True, N_extreme=8,
+                                          newton_atol_extreme="1e-20")
+        namespace, calls, _, _ = self.execute_notebook(cells, controls)
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(namespace["model"], "BSK")
+        expected = {"selected": ("BSK", 0.001), "bsk-large": ("BSK_large", 0.01),
+                    "bsk-extreme": ("BSK_large_large", 1.0)}
+        cases, saved = namespace["notebook_cases"], namespace["saved_files"]
+        self.assertEqual(set(cases), {"selected", "bsk-large", "bsk-extreme", "linear-check", "nonlinear-check"})
+        self.assertEqual(set(saved), set(cases))
+        for name, (model, wall) in expected.items():
+            case = cases[name]
+            result = case.experiment
+            self.assertEqual(case.name, name)
+            self.assertEqual(result.model, model)
+            self.assertTrue(result.solution.converged)
+            self.assertAlmostEqual(float(result.solution.u(0)), wall, places=14)
+            axis = next(axis for axis in case.figures["fields"].axes
+                        if "potential" in axis.get_ylabel().lower())
+            line = next(line for line in axis.lines if len(line.get_xdata()) > 2)
+            self.assertAlmostEqual(float(line.get_ydata()[0]), wall, places=14)
+            settings = json.loads(Path(saved[name]["settings"]).read_text())
+            self.assertEqual(settings["case_name"], name)
+            self.assertEqual(settings["model"], model)
+            restored = load_solution(saved[name]["solution"], problem=result.problem, solver="galerkin")
+            self.assertEqual(tuple(restored.coefficients), tuple(result.solution.coefficients))
+        self.assertIs(cases["selected"].experiment, namespace["experiment"])
+        self.assertIs(cases["bsk-large"].experiment, namespace["bsk_large_experiment"])
+        self.assertIs(cases["bsk-extreme"].experiment, namespace["bsk_extreme_experiment"])
+        self.assertIsNot(cases["selected"].figures["fields"], cases["bsk-large"].figures["fields"])
+        self.assertIsNot(cases["bsk-large"].figures["fields"], cases["bsk-extreme"].figures["fields"])
 

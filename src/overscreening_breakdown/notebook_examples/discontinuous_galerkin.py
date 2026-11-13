@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from decimal import Decimal
 from importlib.metadata import version
 import json
+import re
 from numbers import Integral
 from pathlib import Path
 from time import perf_counter
@@ -695,15 +696,93 @@ def run_preset_sweep(*, N_by_interfaces, newton_atol,
             for count in counts for model in models]
 
 
-def export_experiment(result, directory, *, figures=None, samples=101, x_max=None, resolution=None):
+def _validate_case_name(name):
+    if not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) is None:
+        raise ValueError("case names must be portable identifiers containing letters, digits, '.', '_' or '-'")
+    return name
+
+
+def _figure_solution_metadata(solution):
+    a, physical = solution.arithmetic, solution.physical
+    mapping = getattr(solution, "mapping", getattr(getattr(solution, "basis", None), "mapping", None))
+    return _json_value(dict(
+        solver_type=solution.solver_type, N=solution.N, unknown_count=solution.unknown_count,
+        mapping_type=getattr(mapping, "mapping_type", None),
+        domain=tuple(value if a.isfinite(value) else str(value) for value in solution.domain),
+        arithmetic=dict(backend="mpmath" if a.use_mpmath else "numpy", implementation=a.backend,
+                        precision_dps=a.dps, precision_bits=a.context.prec if a.use_mpmath else 53),
+        delta=physical.delta, boundary_conditions=physical.boundary_conditions,
+        epsilon=dict(lower_bound=physical.epsilon.lower_bound, upper_bound=physical.epsilon.upper_bound,
+                     wall_value=physical.epsilon.wall_value, interfaces=physical.epsilon.interfaces),
+    ), a)
+
+
+def _preflight_export(result, *, figures=None, resolution=None, case_name=None):
+    """Validate ownership and snapshots without creating paths or evaluating fields."""
+    solution = result.solution
+    solution.check_precision()
+    if case_name is not None:
+        _validate_case_name(case_name)
+    if resolution is not None:
+        if getattr(getattr(resolution, "coarse", None), "solution", None) is not solution:
+            raise ValueError("the resolution comparison must belong to this solution")
+        fine = resolution.fine.solution
+        fine.check_precision()
+        if (fine.solver_type != solution.solver_type or fine.domain != solution.domain
+                or fine.N <= solution.N or fine.physical.delta != solution.physical.delta
+                or fine.physical.boundary_conditions != solution.physical.boundary_conditions
+                or any(getattr(fine.physical.epsilon, name) != getattr(solution.physical.epsilon, name)
+                       for name in ("interfaces", "lower_bound", "upper_bound", "wall_value"))):
+            raise ValueError("the resolution comparison must retain the physical problem and increase N")
+        if not isinstance(resolution.relative_changes, Mapping):
+            raise ValueError("resolution changes must be a mapping of finite nonnegative values")
+        for value in resolution.relative_changes.values():
+            value = fine.arithmetic.scalar(value)
+            if not fine.arithmetic.isfinite(value) or value < 0:
+                raise ValueError("resolution changes must be finite and nonnegative")
+    if figures is not None and not isinstance(figures, Mapping):
+        raise ValueError("figures must be a mapping of filenames to figures")
+    normalized, provenance = {}, {}
+    for label, figure in (() if figures is None else figures.items()):
+        name = str(label)
+        if (not name or Path(name).name != name or name in (".", "..") or "\\" in name
+                or any(ord(character) < 32 or ord(character) == 127 for character in name)
+                or name in ("settings", "solution", "profiles") or name in normalized):
+            raise ValueError("figure names must be unique simple filenames and avoid reserved export names")
+        if not callable(getattr(figure, "savefig", None)):
+            raise ValueError("each exported figure must provide savefig(path)")
+        normalized[name] = figure
+        if not hasattr(figure, "_overscreening_solutions"):
+            provenance[name] = dict(ownership="untagged", note="Figure contents are the caller's responsibility.")
+            continue
+        owners = figure._overscreening_solutions
+        if not isinstance(owners, tuple) or not owners:
+            raise ValueError("tagged figures must record their solution owners")
+        if not any(owner is solution for owner in owners):
+            raise ValueError("figure '{}' belongs to a different solution".format(name))
+        for owner in owners:
+            owner.check_precision()
+        provenance[name] = dict(
+            ownership="comparison" if len(owners) > 1 else "single_solution",
+            solutions=[_figure_solution_metadata(owner) for owner in owners],
+        )
+    return MappingProxyType(normalized), _freeze(provenance)
+
+
+def export_experiment(result, directory, *, figures=None, samples=101, x_max=None, resolution=None,
+                      case_name=None):
     """Write settings, a typed solution, native decimal profiles, and optional PDFs.
 
     Custom executable coefficient functions are never serialized. Their
     declarations are exported, with an instruction to supply the function
-    again when loading the typed solution.
+    again when loading the typed solution. Tagged package figures must include
+    this solution among their owners; comparison figures record every owner.
+    Untagged user figures and material previews remain the caller's responsibility.
     """
     if isinstance(samples, bool) or not isinstance(samples, Integral) or samples < 2:
         raise ValueError("export samples must be an integer of at least two")
+    figures, provenance = _preflight_export(
+        result, figures=figures, resolution=resolution, case_name=case_name)
     solution, a = result.solution, result.solution.arithmetic
     domain = _solution_domain(solution)
     left = domain[0]
@@ -714,10 +793,12 @@ def export_experiment(result, directory, *, figures=None, samples=101, x_max=Non
     if finite and right > domain[1]:
         raise ValueError("export x_max lies outside the finite problem domain")
     directory = Path(directory).expanduser()
-    directory.mkdir(parents=True, exist_ok=True)
     paths = {name: directory/filename for name, filename in (
         ("settings", "settings.json"), ("solution", "solution.json"), ("profiles", "profiles.csv"))}
     settings = _json_value(result.settings, a)
+    if case_name is not None:
+        settings["case_name"] = case_name
+    settings["figure_provenance"] = _json_value(provenance, a)
     settings["versions"] = {name: version(name) for name in (
         "overscreening-breakdown", "numpy", "scipy", "mpmath")}
     settings["diagnostics"] = dict(
@@ -726,8 +807,6 @@ def export_experiment(result, directory, *, figures=None, samples=101, x_max=Non
         elapsed_seconds=result.elapsed_seconds, interface_value_convention="right trace",
         note="Numerical convergence and integration checks do not certify spatial accuracy.")
     if resolution is not None:
-        if resolution.coarse is not result:
-            raise ValueError("the resolution comparison must belong to this experiment")
         settings["resolution"] = dict(
             coarse_N=resolution.coarse.solution.N, fine_N=resolution.fine.solution.N,
             coarse_newton_atol=resolution.coarse.settings["numerical"]["newton_atol"],
@@ -735,7 +814,9 @@ def export_experiment(result, directory, *, figures=None, samples=101, x_max=Non
             fine_verified=resolution.fine.solution.converged,
             relative_changes=_json_value(resolution.relative_changes, a),
             note="A two-resolution comparison is a sensitivity check, not a rigorous error bound.")
-    paths["settings"].write_text(json.dumps(settings, indent=2, allow_nan=False)+"\n")
+    encoded_settings = json.dumps(settings, indent=2, allow_nan=False)+"\n"
+    directory.mkdir(parents=True, exist_ok=True)
+    paths["settings"].write_text(encoded_settings)
     solution.save(paths["solution"])
 
     def decimal(value):
@@ -749,14 +830,10 @@ def export_experiment(result, directory, *, figures=None, samples=101, x_max=Non
         for x in points:
             writer.writerow(decimal(value) for value in (
                 x, solution.physical.epsilon(x), solution.u(x), solution.w(x), solution.flux(x)))
-    if figures is not None:
-        for label, figure in figures.items():
-            name = str(label)
-            if not name or Path(name).name != name or name in (".", ".."):
-                raise ValueError("figure names must be simple filenames")
-            path = directory/(name+".pdf")
-            figure.savefig(path)
-            paths[name] = path
+    for name, figure in figures.items():
+        path = directory/(name+".pdf")
+        figure.savefig(path)
+        paths[name] = path
     return paths
 
 
