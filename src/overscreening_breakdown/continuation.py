@@ -5,6 +5,7 @@ discretization builds an affine reference in its own basis and arithmetic;
 this module supplies the common endpoint blend and adaptive stage controller.
 """
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from numbers import Integral
 
@@ -243,10 +244,12 @@ def solve_continuation(
             emit("physical_verification_start", homotopy=zero)
             target = results[-1].stages[-1].target_norm
             try:
-                values = checked_system_call(system, system.residual, state, zero)
-                norm = checked_system_call(system, system.residual_norm, values)
-                converged = bool(all(finite(value) for value in values)
-                                 and finite(norm) and norm <= target)
+                with (progress.phase("physical_verification", homotopy=zero)
+                      if progress is not None else nullcontext()):
+                    values = checked_system_call(system, system.residual, state, zero)
+                    norm = checked_system_call(system, system.residual_norm, values)
+                    converged = bool(all(finite(value) for value in values)
+                                     and finite(norm) and norm <= target)
             except OverflowError:
                 norm, converged = scalar("inf"), False
             if not converged:
@@ -314,8 +317,11 @@ def solve_continuation(
         for _ in range(options.max_reference_corrections):
             if finite(norm) and norm <= target:
                 break
-            correction = checked_system_call(system, system.solve_linear, reference.matrix,
-                                              -reference.residual(state))
+            with (progress.phase("reference_linear_solve", level=3,
+                                 correction=linear_solves, homotopy=one)
+                  if progress is not None else nullcontext()):
+                correction = checked_system_call(system, system.solve_linear, reference.matrix,
+                                                  -reference.residual(state))
             linear_solves += 1
             candidate = state+correction
             if not all(finite(value) for value in candidate):

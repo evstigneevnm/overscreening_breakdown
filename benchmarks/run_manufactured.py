@@ -5,18 +5,21 @@ The default is one small case, not the historical Cartesian parameter sweep.
 """
 
 import argparse
-from contextlib import nullcontext, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 import csv
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from importlib.metadata import PackageNotFoundError, version
 import io
+import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import subprocess
 import sys
+import tempfile
 from time import perf_counter
 import traceback
 
@@ -25,9 +28,11 @@ import numpy as np
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
 from overscreening_breakdown.continuation import ContinuationOptions, ScreenedLinearReference
+from overscreening_breakdown.diagnostics import ProgressReporter
 from overscreening_breakdown.layered import SUPPORTED_INTERFACE_COUNTS, segment_material
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.solvers import solve
+from benchmarks.timing import PhaseTimings, summarize_records
 
 
 SAMPLE_POINTS = ("0", "0.125", "0.5", "1", "2", "4", "8")
@@ -116,6 +121,12 @@ def parser(*, precision_study=False):
                         help="independent points per panel for physical error quadrature")
     result.add_argument("--diagnostic-endpoint", default="8",
                         help="upper diagnostic endpoint for half-line collocation; finite cases use [0,R]")
+    result.add_argument("--repetitions", type=_positive_integer, default=1,
+                        help="measured attempts per configuration; each starts from the catalog initial guess")
+    result.add_argument("--warmup-repetitions", type=_nonnegative_integer, default=0,
+                        help="retained preliminary attempts, excluded from measured summaries")
+    result.add_argument("--process-mode", choices=("same", "fresh"), default="same",
+                        help="fresh solver objects in this process, or a new interpreter per attempt")
     result.add_argument("--output-dir", type=Path, default=Path("benchmark-results"))
     return result
 
@@ -318,19 +329,29 @@ def _diagnostics(*args, **kwargs):
                 "diagnostic_seconds": perf_counter()-started}
 
 
-def _common(case, options, N, precision, quadrature_order):
+@contextmanager
+def _measure_solve(timings, collector):
+    """Finish spans even when a precision error prevents phase-end reporting."""
     started = perf_counter()
-    solution = solve(
-        case.make_problem(), N, solver=options.solver, L=options.L,
-        use_mpmath=options.arithmetic == "mpmath", precision=precision,
-        method=options.method, tolerance=options.tolerance,
-        max_iterations=options.max_iterations, use_globalization=not options.no_globalization,
-        continuation=_continuation_options(options), quadrature_order=quadrature_order,
-        subdivisions=options.subdivisions, quadrature_atol=options.quadrature_atol,
-        quadrature_rtol=options.quadrature_rtol, max_refinements=options.max_refinements,
-        verbosity=options.verbosity,
-    )
-    solve_seconds = perf_counter()-started
+    try:
+        yield
+    finally:
+        timings["solve_seconds"] = perf_counter()-started
+        timings["phase_timings"] = collector.finish(timings["solve_seconds"])
+
+
+def _common(case, options, N, precision, quadrature_order, *, timings, collector):
+    with _measure_solve(timings, collector):
+        solution = solve(
+            case.make_problem(), N, solver=options.solver, L=options.L,
+            use_mpmath=options.arithmetic == "mpmath", precision=precision,
+            method=options.method, tolerance=options.tolerance,
+            max_iterations=options.max_iterations, use_globalization=not options.no_globalization,
+            continuation=_continuation_options(options), quadrature_order=quadrature_order,
+            subdivisions=options.subdivisions, quadrature_atol=options.quadrature_atol,
+            quadrature_rtol=options.quadrature_rtol, max_refinements=options.max_refinements,
+            verbosity=options.verbosity, progress_callback=collector,
+        )
     arithmetic = solution.arithmetic
     finite = arithmetic.isfinite(solution.domain[1])
     endpoint = options.diagnostic_endpoint if options.solver == "collocation" and not finite else None
@@ -366,52 +387,60 @@ def _common(case, options, N, precision, quadrature_order):
                          "epsilon_upper_bound": solution.physical.epsilon.upper_bound,
                          "epsilon_wall_value": solution.physical.epsilon.wall_value,
                          "epsilon_interfaces": solution.physical.epsilon.interfaces},
-            "coefficients": tuple(solution.coefficients), "solve_seconds": solve_seconds,
+            "coefficients": tuple(solution.coefficients),
             **diagnostics}
     return data, arithmetic
 
 
-def _legacy(case, options, N, precision):
+def _legacy(case, options, N, precision, *, timings, collector):
     from overscreening_breakdown.collocation.spectral1d import (
         collocation_discretization, solve_nonlinear_problem,
     )
     use_mp = options.arithmetic == "mpmath"
     arithmetic = MpmathArithmetic(precision) if use_mp else NumpyArithmetic()
     problem = case.legacy_problem()
-    started = perf_counter()
-    if callable(getattr(problem, "right_hand_side", None)):
-        discretization = solve_nonlinear_problem(
-            N, problem=problem, L=arithmetic.scalar(options.L), use_mpmath=use_mp, prec=precision,
-            use_method=options.method, tolerance=arithmetic.scalar(options.tolerance),
-            total_iterations=options.max_iterations,
-            use_globalization=not options.no_globalization,
-            continuation=_continuation_options(options),
-            verbosity=options.verbosity)
-        coefficients = discretization.solve_problem()
-        converged = discretization.is_converged()
-        result = discretization.get_newton_result()
-        scipy_result = discretization.get_scipy_result()
-        method = options.method
-    else:
-        discretization = collocation_discretization(
-            N, domain=problem.get_domain(), L=arithmetic.scalar(options.L),
-            use_mpmath=use_mp, prec=precision)
-        problem.set_use_mp_math(discretization.get_mpmath_ref())
-        discretization.set_boundary_conditions(problem.get_boundary_conditions())
-        matrix = discretization.bilinear_form(discretization.psi, 0)
-        derivatives = (discretization.psi, discretization.dpsi, discretization.ddpsi,
-                       discretization.dddpsi, discretization.ddddpsi)
-        for factor, derivative in zip(problem.operator(), derivatives):
-            if factor is not None:
-                matrix += discretization.bilinear_form(derivative, factor)
-        matrix = discretization.set_boundary_bilinear_form_tau_method(matrix)
-        rhs = discretization.linear_functional(lambda x, t: problem.rhs_in_domain(x))
-        rhs = discretization.linear_functional_boundary(rhs)
-        coefficients = discretization.solve(matrix, rhs)
-        residual = matrix*coefficients-rhs if use_mp else matrix@coefficients-rhs
-        converged = arithmetic.norm(residual) <= arithmetic.scalar(options.tolerance)*(1+arithmetic.norm(rhs))
-        result, scipy_result, method = None, None, "direct"
-    solve_seconds = perf_counter()-started
+    nonlinear = callable(getattr(problem, "right_hand_side", None))
+    progress = ProgressReporter(verbosity=options.verbosity, progress_callback=collector,
+                                arithmetic=arithmetic, solver="legacy_collocation",
+                                method=options.method if nonlinear else "direct")
+    with _measure_solve(timings, collector):
+        if nonlinear:
+            with progress.phase("collocation_setup"):
+                discretization = solve_nonlinear_problem(
+                    N, problem=problem, L=arithmetic.scalar(options.L), use_mpmath=use_mp, prec=precision,
+                    use_method=options.method, tolerance=arithmetic.scalar(options.tolerance),
+                    total_iterations=options.max_iterations,
+                    use_globalization=not options.no_globalization,
+                    continuation=_continuation_options(options),
+                    verbosity=options.verbosity, _reporter=progress)
+            coefficients = discretization.solve_problem()
+            converged = discretization.is_converged()
+            result = discretization.get_newton_result()
+            scipy_result = discretization.get_scipy_result()
+            method = options.method
+        else:
+            with progress.phase("collocation_setup"):
+                discretization = collocation_discretization(
+                    N, domain=problem.get_domain(), L=arithmetic.scalar(options.L),
+                    use_mpmath=use_mp, prec=precision)
+                problem.set_use_mp_math(discretization.get_mpmath_ref())
+                discretization.set_boundary_conditions(problem.get_boundary_conditions())
+            with progress.phase("collocation_assembly"):
+                matrix = discretization.bilinear_form(discretization.psi, 0)
+                derivatives = (discretization.psi, discretization.dpsi, discretization.ddpsi,
+                               discretization.dddpsi, discretization.ddddpsi)
+                for factor, derivative in zip(problem.operator(), derivatives):
+                    if factor is not None:
+                        matrix += discretization.bilinear_form(derivative, factor)
+                matrix = discretization.set_boundary_bilinear_form_tau_method(matrix)
+                rhs = discretization.linear_functional(lambda x, t: problem.rhs_in_domain(x))
+                rhs = discretization.linear_functional_boundary(rhs)
+            with progress.phase("linear_solve", level=3):
+                coefficients = discretization.solve(matrix, rhs)
+            with progress.phase("residual", level=3):
+                residual = matrix*coefficients-rhs if use_mp else matrix@coefficients-rhs
+                converged = arithmetic.norm(residual) <= arithmetic.scalar(options.tolerance)*(1+arithmetic.norm(rhs))
+            result, scipy_result, method = None, None, "direct"
 
     def evaluate(field, x):
         order = {"u": 0, "u_dx": 1, "w": 2, "w_dx": 3}[field]
@@ -438,7 +467,7 @@ def _legacy(case, options, N, precision):
             "wall_u_defect": evaluate("u", arithmetic.scalar(0))-arithmetic.scalar(problem.get_boundary_conditions()[0][0]),
             "far_u_trace": evaluate("u", arithmetic.inf),
             "diagnostic_domain": ["0", options.diagnostic_endpoint],
-            "coefficients": tuple(coefficients), "solve_seconds": solve_seconds,
+            "coefficients": tuple(coefficients),
             **diagnostics}, arithmetic
 
 
@@ -470,9 +499,9 @@ def _validate(options, argument_parser, *, precision_study):
 
 def _write(output_dir, metadata, records):
     output_dir.mkdir(parents=True, exist_ok=True)
-    report = {"format_version": 1, "metadata": metadata,
+    report = {"format_version": 2, "metadata": metadata,
               "diagnostic_note": "Errors use independent fixed quadrature, not rigorous bounds. Finite problems use their full physical segment. Half-line collocation uses the stated finite window because a nonzero far trace prevents physical integrability. Half-line Galerkin errors assume integrable reference fields. Sampled maxima use only the recorded diagnostic_sample_points.",
-              "records": records}
+              "summaries": summarize_records(records), "records": records}
     (output_dir/"results.json").write_text(json.dumps(report, indent=2, allow_nan=False)+"\n")
     csv_records = [{"versions": metadata["versions"], "platform": metadata["platform"],
                     "python": metadata["python"], "revision": metadata["revision"],
@@ -486,6 +515,152 @@ def _write(output_dir, metadata, records):
         for row in csv_records:
             writer.writerow({key: json.dumps(value, sort_keys=True) if isinstance(value, (dict, list, tuple)) else value
                              for key, value in row.items()})
+
+
+def _configuration(selector, options, N, precision, order):
+    """Hash comparable controls, excluding repeat counters and output paths."""
+    varying = {"cases", "resolutions", "precisions", "precision", "quadrature_order",
+               "repetitions", "warmup_repetitions", "output_dir"}
+    controls = {key: value for key, value in vars(options).items() if key not in varying}
+    controls.update(case=selector, N=N, quadrature_order=order,
+                    precision=precision if options.arithmetic == "mpmath" else None,
+                    actual_backend=mp.libmp.BACKEND)
+    encoded = json.dumps(controls, sort_keys=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16], controls
+
+
+def _work_counts(row):
+    """Count work across all quadrature solves, including unsuccessful plans."""
+    history = row.get("quadrature_history") or []
+    results = [item["newton_result"] for item in history if item.get("newton_result") is not None]
+    if not results and row.get("newton") is not None:
+        results = [row["newton"]]
+    work = {"newton_iterations": sum(result["iterations"] for result in results),
+            "newton_stages": sum(len(result["stages"]) for result in results),
+            "continuation_attempts": sum(result["continuation_attempts"] for result in results),
+            "adjoint_steps": sum(result["adjoint_steps"] for result in results),
+            "quadrature_solves": len(history),
+            "quadrature_refinements": max(0, len(history)-1)}
+    phases = row.get("phase_timings", {}).get("by_phase", {})
+    work["phase_calls"] = {name: item["count"] for name, item in phases.items()}
+    events = row.get("phase_timings", {}).get("event_counts", {})
+    work["observed_iteration_starts"] = events.get("iteration_start", 0)
+    work["observed_iteration_ends"] = events.get("iteration_end", 0)
+    work["observed_stage_starts"] = events.get("stage_start", 0)
+    work["source"] = "solver_results"
+    if row.get("error_type"):
+        # An exception can interrupt a solve after substantial work, before it
+        # returns a NewtonResult. Event counts remain partial observations.
+        work["source"] = "partial_events_only"
+        for name in ("newton_iterations", "newton_stages", "continuation_attempts",
+                     "adjoint_steps", "quadrature_solves", "quadrature_refinements"):
+            work[name] = None
+    # SciPy exposes evaluation counts, but not its internal factorization cost.
+    scipy = row.get("scipy")
+    work["scipy_function_evaluations"] = scipy.get("nfev") if scipy is not None else None
+    return work
+
+
+def _execute_attempt(options, selector, N, precision, order, *, expected_backend=None):
+    """One independent solve: rebuild the description, owners and solver data."""
+    started = perf_counter()
+    row, timings, log = {"mpmath_backend": mp.libmp.BACKEND}, {}, io.StringIO()
+    collector = PhaseTimings()
+    try:
+        backend = options.backend if expected_backend is None else expected_backend
+        if backend != "auto" and backend != mp.libmp.BACKEND:
+            raise ValueError("actual mpmath backend is {!r}, expected {!r}; launch the benchmark "
+                             "with matching backend environment settings".format(mp.libmp.BACKEND, backend))
+        scope = mp.workdps(precision) if options.arithmetic == "mpmath" else nullcontext()
+        output = _Tee(log, sys.stdout) if options.verbosity else log
+        with scope, redirect_stdout(output):
+            case = _case(selector, options)
+            parameters = _finite_parameters(selector, options)
+            row.update(case_identifier=case.identifier, case_name=case.name,
+                       case_notes=case.notes, supported_solvers=list(case.supported_solvers),
+                       case_parameters=parameters)
+            data, arithmetic = (_legacy(case, options, N, precision,
+                                        timings=timings, collector=collector)
+                                if options.solver == "legacy_collocation" else
+                                _common(case, options, N, precision, order,
+                                        timings=timings, collector=collector))
+            # Clocks are ordinary wall-clock floats, independent of solution
+            # precision. Only physical numerical values use decimal strings.
+            timings["diagnostic_seconds"] = data.pop("diagnostic_seconds")
+            row.update(_portable(data, arithmetic))
+            row["precision_bits"] = arithmetic.context.prec if arithmetic.use_mpmath else 53
+            row["actual_decimal_precision"] = arithmetic.dps
+    except Exception as error:
+        row.update(converged=False, error_type=type(error).__name__, error=str(error),
+                   traceback=traceback.format_exc())
+    row.update(timings)
+    if "phase_timings" not in row:
+        row["phase_timings"] = collector.finish(0.0)
+    row.update(solver_log=log.getvalue(), process_id=os.getpid(), work=_work_counts(row))
+    row["linear_solve_timing"] = (
+        "unavailable_scipy_internal" if row.get("method", options.method) in
+        ("root", "root_no_jac", "nonlin_solve") else
+        "native_factorization_and_solve")
+    row["scipy_internal_linear_solve_seconds"] = None
+    row["attempt_seconds"] = perf_counter()-started
+    return row
+
+
+def _export_attempt(path, row):
+    """Measure one payload export; its duration is recorded by the parent report.
+
+    The payload excludes its own export_seconds and any later process-wall
+    measurement. Aggregate JSON/CSV rewrites and IPC are separate reporting work.
+    """
+    started = perf_counter()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(row, indent=2, allow_nan=False)+"\n")
+    return perf_counter()-started
+
+
+def _fresh_attempt(options, selector, N, precision, order, row, attempt_path):
+    """Run one child without a shell or recursive repetition dispatch."""
+    with tempfile.TemporaryDirectory(prefix="overscreening-benchmark-", dir="/tmp") as directory:
+        directory = Path(directory)
+        request, response = directory/"request.json", directory/"response.json"
+        request.write_text(json.dumps({
+            "options": {key: str(value) if isinstance(value, Path) else value
+                        for key, value in vars(options).items()},
+            "selector": selector, "N": N, "precision": precision, "order": order,
+            "record": row, "attempt_path": str(attempt_path.resolve()),
+        }, allow_nan=False))
+        started = perf_counter()
+        child = None
+        output = []
+        try:
+            child = subprocess.Popen(
+                [sys.executable, "-B", "-m", "benchmarks._worker", str(request), str(response)],
+                cwd=Path(__file__).resolve().parents[1],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            for line in child.stdout:
+                output.append(line)
+                if options.verbosity:
+                    print(line, end="", flush=True)
+            child.wait()
+        except BaseException:
+            if child is not None:
+                child.kill()
+                child.wait()
+            raise
+        finally:
+            elapsed = perf_counter()-started
+            if child is not None and child.stdout is not None:
+                child.stdout.close()
+        if child.returncode != 0 or not response.exists():
+            row.update(converged=False, error_type="ChildProcessError",
+                       error="benchmark child exited with status {}".format(child.returncode),
+                       child_output="".join(output), process_id=child.pid)
+            row["export_seconds"] = _export_attempt(attempt_path, row)
+        else:
+            row = json.loads(response.read_text())
+        row["process_wall_seconds"] = elapsed
+        return row
 
 
 def main(argv=None, *, precision_study=False):
@@ -509,6 +684,16 @@ def main(argv=None, *, precision_study=False):
     metadata["study"] = "precision" if precision_study else options.study
     metadata["options"] = {key: str(value) if isinstance(value, Path) else value
                            for key, value in vars(options).items()}
+    metadata["measurement"] = {
+        "clock": "time.perf_counter", "phase_observer": "PhaseTimings",
+        "verbosity": options.verbosity,
+        "instrumentation_included": True,
+        "same_process": "fresh problem, arithmetic owner and solver objects per attempt",
+        "fresh_process": "new interpreter per attempt; OS caches are not reset",
+        "export_scope": "standalone attempt JSON serialization/write, excluding its own timing field",
+        "attempt_scope": "case preparation, solve, independent diagnostics and record conversion; excluding export",
+        "process_wall_scope": "child startup/imports through exit, including diagnostics, export and IPC",
+    }
     records, failed = [], False
     precisions = options.precisions if precision_study else [options.precision]
     for selector, case, parameters in cases:
@@ -518,9 +703,11 @@ def main(argv=None, *, precision_study=False):
                     run_options = argparse.Namespace(**vars(options))
                     if run_options.tolerance == "auto":
                         run_options.tolerance = "1e-{}".format(max(8, precision-12) if options.arithmetic == "mpmath" else 10)
-                    row = {"case": selector, "case_identifier": case.identifier,
-                           "case_name": case.name, "case_notes": case.notes,
-                           "supported_solvers": case.supported_solvers, "solver": options.solver,
+                    config_id, controls = _configuration(selector, run_options, N, precision, order)
+                    metadata.setdefault("configurations", {})[config_id] = controls
+                    base = {"config_id": config_id, "case": selector, "solver": options.solver,
+                           "case_identifier": case.identifier, "case_name": case.name,
+                           "case_notes": case.notes, "supported_solvers": list(case.supported_solvers),
                            "N": N, "L": None if parameters is not None else options.L,
                            "case_parameters": parameters,
                            "arithmetic": options.arithmetic,
@@ -529,30 +716,31 @@ def main(argv=None, *, precision_study=False):
                            "requested_quadrature_order": order,
                            "tolerance": run_options.tolerance,
                            "diagnostic_quadrature_order": options.diagnostic_order}
-                    log = io.StringIO()
-                    try:
-                        # Legacy callbacks use global mp; retain one scoped precision
-                        # through assembly and diagnostics and restore it afterwards.
-                        scope = mp.workdps(precision) if options.arithmetic == "mpmath" else nullcontext()
-                        output = _Tee(log, sys.stdout) if options.verbosity else log
-                        with scope, redirect_stdout(output):
-                            data, arithmetic = (_legacy(case, run_options, N, precision)
-                                                if options.solver == "legacy_collocation" else
-                                                _common(case, run_options, N, precision, order))
-                            row.update(_portable(data, arithmetic))
-                            row["precision_bits"] = arithmetic.context.prec if arithmetic.use_mpmath else 53
-                            row["actual_decimal_precision"] = arithmetic.dps
-                        failed |= not row["converged"] or not row["diagnostic_success"]
-                    except Exception as error:
-                        row.update(converged=False, error_type=type(error).__name__, error=str(error),
-                                   traceback=traceback.format_exc())
-                        failed = True
-                    row["solver_log"] = log.getvalue()
-                    records.append(row)
-                    _write(options.output_dir, metadata, records)
-                    print("{} {} N={} precision={} converged={} diagnostics={}".format(
-                        selector, options.solver, N, precision if options.arithmetic == "mpmath" else "float64",
-                        row["converged"], row.get("diagnostic_success", False)), flush=True)
+                    for warmup, count in ((True, options.warmup_repetitions), (False, options.repetitions)):
+                        for repetition in range(1, count+1):
+                            row = dict(base, attempt_id=len(records)+1, warmup=warmup,
+                                       repetition=repetition, process_mode=options.process_mode)
+                            relative = Path("attempts")/"{:05d}-{}.json".format(row["attempt_id"], config_id)
+                            row["attempt_file"] = str(relative)
+                            attempt_path = options.output_dir/relative
+                            try:
+                                if options.process_mode == "fresh":
+                                    row = _fresh_attempt(run_options, selector, N, precision, order,
+                                                         row, attempt_path)
+                                else:
+                                    row.update(_execute_attempt(run_options, selector, N, precision, order))
+                                    row["process_wall_seconds"] = None
+                                    row["export_seconds"] = _export_attempt(attempt_path, row)
+                            except Exception as error:
+                                row.update(converged=False, error_type=type(error).__name__,
+                                           error=str(error), traceback=traceback.format_exc())
+                            failed |= not row.get("converged", False) or not row.get("diagnostic_success", False)
+                            records.append(row)
+                            _write(options.output_dir, metadata, records)
+                            print("{} {} N={} precision={} {}={} converged={} diagnostics={}".format(
+                                selector, options.solver, N, precision if options.arithmetic == "mpmath" else "float64",
+                                "warmup" if warmup else "repetition", repetition,
+                                row["converged"], row.get("diagnostic_success", False)), flush=True)
     print("results: {}".format(options.output_dir.resolve()), flush=True)
     return int(failed)
 

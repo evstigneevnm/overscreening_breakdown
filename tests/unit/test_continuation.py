@@ -218,13 +218,20 @@ class ContinuationTests(unittest.TestCase):
                 answer[0] += a.scalar("1e-8")
             return answer
 
+        events = []
         result = solve_continuation(
-            replace(system, solve_linear=linear), reference_factory=factory, atol="1e-40")
+            replace(system, solve_linear=linear), reference_factory=factory, atol="1e-40",
+            progress=ProgressReporter(progress_callback=events.append, arithmetic=a))
         self.assertTrue(result.converged)
         self.assertTrue(perturbed[0])
         self.assertEqual(result.reference_result.linear_solves, 2)
         self.assertEqual(result.reference_result.target_norm, a.scalar("1e-40"))
         self.assertLessEqual(result.reference_result.residual_norm, a.scalar("1e-40"))
+        timed_solves = [event for event in events if event.kind == "phase_end"
+                        and event.data.get("phase") == "reference_linear_solve"]
+        self.assertEqual(len(timed_solves), result.reference_result.linear_solves)
+        self.assertEqual(timed_solves[-1].data["correction"], 1)
+        self.assertTrue(all(event.data["success"] for event in timed_solves))
 
     def test_adjoint_recovery_operates_at_the_frozen_intermediate_parameter(self):
         for a in (NumpyArithmetic(), MpmathArithmetic(50)):

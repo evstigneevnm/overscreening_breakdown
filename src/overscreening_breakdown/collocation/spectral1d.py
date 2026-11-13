@@ -1271,7 +1271,9 @@ class solve_nonlinear_problem(collocation_discretization):
 
             def scipy_residual(coefficients):
                 nonlocal best_norm
-                values = self.__residual_operator(coefficients)
+                with self.__progress.phase("scipy_residual", level=3,
+                                           function_evaluations=evaluations[0]+1):
+                    values = self.__residual_operator(coefficients)
                 evaluations[0] += 1
                 if self.__progress.wants("scipy_evaluation", level=2, throttle=True):
                     if not np.all(np.isfinite(values)):

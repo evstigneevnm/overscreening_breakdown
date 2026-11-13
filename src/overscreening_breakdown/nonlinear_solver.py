@@ -193,8 +193,10 @@ def solve_newton(
         if not finite_vector(state):
             return None, infinity
         try:
-            residual = checked_system_call(system, system.residual, state, parameter)
-            norm = checked_system_call(system, system.residual_norm, residual)
+            with phase("residual", stage=stage,
+                       iteration=iteration_offset+total_iterations, homotopy=parameter):
+                residual = checked_system_call(system, system.residual, state, parameter)
+                norm = checked_system_call(system, system.residual_norm, residual)
         except OverflowError:
             return None, infinity
         if not finite_vector(residual) or not finite(norm):

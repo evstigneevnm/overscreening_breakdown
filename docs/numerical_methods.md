@@ -878,9 +878,8 @@ Finite Galerkin has `2*N` unknowns. The records retain catalog initialization:
 `linear_endpoint_lift_zero_w` for finite Galerkin and `wall_exponential` for
 finite collocation. These policies differ, so timings do not imply matched
 initial guesses. The notebook's explicit initial-guess projection is also a
-separate operation. BSK physical benchmarks, parameter sweeps, timing
-breakdowns, and additional boundary-trace studies are outside this registration
-step.
+separate operation. BSK physical benchmarks, parameter sweeps and additional
+boundary-trace studies remain separate work.
 
 `run_precision` holds both N and the quadrature rule fixed and disables adaptive
 quadrature solves. Its default tolerance is `auto`, using
@@ -901,15 +900,103 @@ status. The output records versions, platform, revision and working-tree state,
 actual backend/bits, requested controls, actual unknown count, native coefficient
 decimals, Newton histories and final homotopy, quadrature histories, convergence
 flags, and separate solve/diagnostic wall times. High-precision values are
-decimal strings without a float64 intermediate; timing values remain measured
-wall-clock quantities. The solve timing includes assembly and linear solves;
-it is not a claimed breakdown of those internal costs. No warm-cache claim or
-performance threshold is inferred from it.
+decimal strings without a float64 intermediate; timing values are ordinary
+wall-clock JSON numbers, independent of arithmetic precision.
 SciPy collocation rows also retain a `scipy` record containing the stop status,
 message, evaluation counts, verified final residual and acceptance target.
 That record distinguishes SciPy termination from residual-certified convergence
 in both the common and legacy nonlinear benchmark paths; other methods record
 `scipy=null`.
+
+### Timing and independent repetitions
+
+The default remains one measured attempt without warmups. Repetition controls
+apply to both `run_manufactured` and `run_precision`:
+
+```bash
+# One interpreter, fresh problem and numerical objects for every attempt.
+python -B -m benchmarks.run_manufactured --case finite:constant --N 4 \
+  --repetitions 5 --warmup-repetitions 1 --process-mode same \
+  --output-dir /tmp/repeated-solves
+
+# Each attempt starts a new Python interpreter, using the current executable.
+python -B -m benchmarks.run_manufactured --case rational:constant --N 4 \
+  --repetitions 5 --process-mode fresh --output-dir /tmp/fresh-process-solves
+```
+
+Each attempt reconstructs the catalog case, problem, arithmetic owner and solver
+objects. It uses the same initial-guess policy and stopping controls; it never
+restarts from a previous repetition's solution. Within one solve, adaptive
+quadrature and continuation still reuse accepted states as usual. Neither
+process mode resets operating-system caches. Repeated public solves do not
+measure reuse of a quadrature factory's cached plans. Mpmath backend selection
+remains a process-launch setting, inherited by fresh children.
+
+Every warmup and measured attempt remains in `results.json` and `results.csv`,
+with its configuration ID, repetition index, process ID, role and work counts.
+Warmups are excluded from measured distributions. Summaries distinguish all,
+successful and failed measured attempts and report medians, quartiles, IQRs and
+counts. They also retain warmup-failure counts. A failed warmup, solve or
+diagnostic makes the overall command return a nonzero status. Differences in
+Newton iterations, continuation attempts and quadrature solves are visible in
+the work summaries; compare equivalent work before interpreting timings.
+
+The clocks have distinct scopes:
+
+| Field | Measured interval |
+| --- | --- |
+| `solve_seconds` | Public solve, including binding, setup, assembly, initialization, nonlinear iterations and quadrature checks |
+| `diagnostic_seconds` | Independent physical-error integration and sampled errors |
+| `attempt_seconds` | Case preparation, solve, diagnostics and record conversion; excludes export |
+| `export_seconds` | Serialization and write of that attempt's standalone JSON payload |
+| `process_wall_seconds` | Fresh-child startup/imports through exit, including diagnostics, export and IPC; null for same-process mode |
+
+Standalone payloads live under `attempts/`. Their own export duration and the
+later process-wall measurement appear in the aggregate report, so measuring a
+write does not require rewriting that same payload to include its duration.
+Aggregate JSON/CSV rewrites, summary generation and parent-side IPC preparation
+are reporting work outside `export_seconds`. Writes are buffered filesystem
+writes; these measurements do not claim durable-storage flush times.
+If a child crashes, the parent's fallback payload export happens after the
+measured child lifetime and is outside that attempt's `process_wall_seconds`.
+
+`phase_timings` records individual spans with parent IDs, context, success and
+inclusive/exclusive durations, plus per-phase totals and distributions across
+repetitions. Exclusive durations subtract immediate children and can be added;
+inclusive durations describe a whole phase and must not be added across nested
+phases. `unattributed_seconds` covers solver work outside root spans. Setup,
+basis tabulation, constant assembly, residual trials, Jacobians, linear solves,
+reference construction and quadrature checks are separately observable where
+the method supplies them. A native `linear_solve` includes factorization and
+solve. SciPy's internal factorization is unavailable and recorded as null;
+its total solve and observable residual/Jacobian callbacks are measured.
+
+On an exception, received phase-end events retain failure details. If reporting
+cannot safely finish a phase, such as after a precision-ownership violation,
+the collector marks its observer-clock estimate incomplete. Partial or invalid
+phase accounts are identified explicitly and excluded from complete phase
+distributions. The collector evaluates no physical callbacks and changes no
+precision. Timing includes instrumentation overhead and any requested progress
+printing; use the default `--verbosity 0` for timing comparisons. No test uses
+machine-speed thresholds.
+
+### Quadrature factory cache study
+
+```bash
+python -B -m benchmarks.run_quadrature_cache --arithmetic mpmath --precision 50 \
+  --R 4 --interfaces 1 2 3 --order 12 --subdivisions 1 \
+  --lookups 1000 --repetitions 3 --output-dir /tmp/quadrature-cache
+```
+
+This separate microbenchmark writes `quadrature-cache.json`. Each repetition
+creates a fresh arithmetic owner and factory, measures its first plan build,
+then times a batch of cached lookups with identical geometry, order,
+subdivisions and precision. Every lookup checks that it returns the same plan
+object. The batch duration includes loop and identity-check overhead; its
+per-call value is a batch average. Owner/factory creation and first construction
+are reported separately. Omit `--R` to use the rational half-line mapping with
+`--L`. Process startup/imports and export are excluded from these clocks. This
+does not require a new prepared-solver interface.
 
 Physical errors use an independent fixed Gauss rule whose order is reported;
 increase `--diagnostic-order` to assess integration error. Finite problems use

@@ -82,7 +82,9 @@ class NewtonProgressTests(unittest.TestCase):
         original = system.residual
 
         def residual(state, q):
-            self.assertEqual(events[-1].kind, "stage_start")
+            self.assertEqual(events[0].kind, "stage_start")
+            self.assertEqual(events[-1].kind, "phase_start")
+            self.assertEqual(events[-1].data["phase"], "residual")
             return original(state, q)
 
         from dataclasses import replace
@@ -121,8 +123,14 @@ class NewtonProgressTests(unittest.TestCase):
                             for event in events if "homotopy" in event.data))
         self.assertTrue(all(event.data["stage"] == 4
                             for event in events if "stage" in event.data))
+        first_iteration = next(index for index, event in enumerate(events)
+                               if event.kind == "iteration_start")
+        # The initial residual belongs to the incoming state (offset 11).
+        # Trial evaluations and accepted-step events belong to iteration 12.
+        self.assertEqual([event.data["iteration"] for event in events[:first_iteration]
+                          if "iteration" in event.data], [11, 11])
         self.assertTrue(all(event.data["iteration"] == 12
-                            for event in events if "iteration" in event.data))
+                            for event in events[first_iteration:] if "iteration" in event.data))
         self.assertFalse(any(event.kind in ("restart_start", "homotopy_transition")
                              for event in events))
 

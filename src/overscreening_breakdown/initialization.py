@@ -104,7 +104,10 @@ def initialize_fsolve(system, initial, *, tolerance="0.1", max_evaluations=200,
         nonlocal best, best_norm
         consume(0)
         values = state(values)
-        residual = np.asarray(checked_system_call(system, system.residual, values.copy(), zero))
+        with (progress.phase("initializer_residual", level=3,
+                             evaluations=sum(counts), homotopy=zero)
+              if progress is not None else nullcontext()):
+            residual = np.asarray(checked_system_call(system, system.residual, values.copy(), zero))
         if residual.shape != original.shape or residual.dtype != original.dtype:
             raise ValueError("initializer residual must match the NumPy coefficient vector")
         norm = checked_system_call(system, system.residual_norm, residual)

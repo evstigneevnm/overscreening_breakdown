@@ -1,5 +1,6 @@
 """Common physical-problem entry point for collocation and mixed Galerkin."""
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from numbers import Integral
 from pathlib import Path
@@ -96,7 +97,7 @@ def _initial_coefficients(initial, physical, N, L, solver_type):
     return initial
 
 
-def _project_initial_u(assembly, callback):
+def _project_initial_u(assembly, callback, *, progress=None):
     assembly.check_precision()
     arithmetic = assembly.arithmetic
     table, weights = assembly.table, assembly.plan.physical_weights
@@ -117,7 +118,11 @@ def _project_initial_u(assembly, callback):
         assembly._sum(weight*value*v[i] for weight, value, v in zip(weights, values, table.v))
         for i in range(m)
     ])
-    first = arithmetic.solve(matrix, rhs)
+    with (progress.phase("linear_solve", level=3, purpose="initial_projection")
+          if progress is not None else nullcontext()):
+        assembly.check_precision()
+        first = arithmetic.solve(matrix, rhs)
+        assembly.check_precision()
     return arithmetic.vector(tuple(first)+(arithmetic.scalar(0),)*assembly.basis.n_w)
 
 
@@ -316,16 +321,17 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
         # its result in owned arithmetic and restore the caller's exact bits.
         previous_bits = mp.mp.prec
         try:
-            legacy = solve_nonlinear_problem(
-                int(N), problem=adapter, L=arithmetic.scalar(L), use_mpmath=use_mpmath,
-                prec=precision, use_method=method, tolerance=tolerance,
-                total_iterations=max_iterations, use_globalization=use_globalization,
-                continuation=continuation,
-                initializer=initializer, initializer_tolerance=initializer_tolerance,
-                initializer_max_evaluations=int(initializer_max_evaluations),
-                newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
-                _reporter=progress.bind(norm="rms"),
-            )
+            with progress.phase("collocation_setup"):
+                legacy = solve_nonlinear_problem(
+                    int(N), problem=adapter, L=arithmetic.scalar(L), use_mpmath=use_mpmath,
+                    prec=precision, use_method=method, tolerance=tolerance,
+                    total_iterations=max_iterations, use_globalization=use_globalization,
+                    continuation=continuation,
+                    initializer=initializer, initializer_tolerance=initializer_tolerance,
+                    initializer_max_evaluations=int(initializer_max_evaluations),
+                    newton_fallback=newton_fallback, adjoint_max_steps=int(adjoint_max_steps),
+                    _reporter=progress.bind(norm="rms"),
+                )
             native_initial = None
             if initial_guess is not None:
                 native_initial = (mp.matrix(tuple(initial_guess)) if use_mpmath else
@@ -364,10 +370,10 @@ def _solve(problem, N, *, solver, L, use_mpmath, precision, method, tolerance,
     assembly = assembly_type._from_snapshot(physical, basis, plan, progress=progress)
     if callable(initial_guess):
         with progress.phase("initial_projection"):
-            initial_guess = _project_initial_u(assembly, initial_guess)
+            initial_guess = _project_initial_u(assembly, initial_guess, progress=progress)
     elif initial_guess is None and physical._initial_guess is not None:
         with progress.phase("initial_projection"):
-            initial_guess = _project_initial_u(assembly, physical._initial_guess)
+            initial_guess = _project_initial_u(assembly, physical._initial_guess, progress=progress)
     atol = tolerance if quadrature_atol is None else arithmetic.scalar(quadrature_atol)
     rtol = tolerance if quadrature_rtol is None else arithmetic.scalar(quadrature_rtol)
     if (not arithmetic.isfinite(atol) or not arithmetic.isfinite(rtol) or atol < 0 or rtol < 0):
