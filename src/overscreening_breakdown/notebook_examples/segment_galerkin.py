@@ -5,48 +5,13 @@ These helpers only place and describe material layers; they do not solve or
 infer a physical source, boundary condition, or numerical resolution.
 """
 
-from decimal import Decimal, InvalidOperation, localcontext
-from numbers import Integral
-
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
-from overscreening_breakdown.layered import LayeredMaterial, SUPPORTED_INTERFACE_COUNTS
+from overscreening_breakdown.layered import (
+    LayeredMaterial, _segment_radius as _radius, segment_material as segment_material,
+)
 from overscreening_breakdown.notebook_examples.discontinuous_galerkin import (
     ACCURACY_PRESETS, _coefficient, _number,
 )
-
-
-def _radius(R):
-    if isinstance(R, bool):
-        raise ValueError("R must be a finite positive decimal number")
-    try:
-        radius = Decimal(str(R))
-    except (InvalidOperation, TypeError, ValueError) as error:
-        raise ValueError("R must be a finite positive decimal number") from error
-    if not radius.is_finite() or radius <= 0:
-        raise ValueError("R must be a finite positive decimal number")
-    return radius
-
-
-def segment_material(interface_count, *, R, kind="constant"):
-    """Place the requested jumps at k*R/(interface_count+1), k=1,...,m.
-
-    Decimal strings retain at least 180 significant digits for subsequent
-    native mpmath binding. Rebuilding this preset with a different R moves
-    the interfaces. A domain-length study with fixed physical layers should
-    instead reuse its original material description.
-    """
-    if (isinstance(interface_count, bool) or not isinstance(interface_count, Integral)
-            or interface_count not in SUPPORTED_INTERFACE_COUNTS):
-        raise ValueError("choose 1, 2, 3, 5, 7, or 10 interfaces")
-    radius = _radius(R)
-    values = ("1", "2", "1.25", "1.75")
-    rows = [("0", values[0])]
-    with localcontext() as context:
-        context.prec = max(180, len(radius.as_tuple().digits)+40)
-        for index in range(1, int(interface_count)+1):
-            position = radius*Decimal(index)/Decimal(int(interface_count)+1)
-            rows.append((str(position), values[index % len(values)]))
-    return LayeredMaterial(rows, kind=kind)
 
 
 def segment_material_table(material, *, R, accuracy="standard"):

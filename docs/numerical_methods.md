@@ -843,6 +843,45 @@ Newton/globalization, precision, quadrature, and independent diagnostic options.
 Legacy linear problems use a direct solve; legacy nonlinear problems use the
 selected existing nonlinear method. `--method` applies to nonlinear solves.
 
+Finite manufactured cases use `finite:constant`, `finite:smooth`, or
+`finite:layered`, with `finite-nonlinear:` selecting the corresponding cubic
+reaction. These reuse `finite_segment_case`; no notebook cells need execution.
+Set `--R` (default `4`), `--delta` (default `2`), and `--beta` (default `0.125`,
+used by nonlinear cases) explicitly as needed. Layered cases also accept
+`--interfaces 1|2|3|5|7|10` and `--material-style constant|graded`; their preset
+is the same precision-preserving material builder used by the finite notebook.
+These are fixed case parameters, independent of the chosen study axis.
+Constant epsilon-one cases allow collocation or Galerkin; smooth and layered
+cases require Galerkin. Finite selectors have no legacy collocation fixture.
+
+```bash
+python -B -m benchmarks.run_manufactured \
+  --case finite-nonlinear:layered --R 4 --delta 2 --beta 0.125 \
+  --interfaces 3 --material-style constant --solver galerkin \
+  --study resolution --N 8 16 32 --tolerance 1e-10 \
+  --output-dir /tmp/finite-layered-resolution
+
+python -B -m benchmarks.run_precision --case finite:constant --R 4 \
+  --solver galerkin --N 4 --quadrature-order 8 --precisions 30 50 100 120 \
+  --output-dir /tmp/finite-precision
+```
+
+Finite diagnostics use an independent affine rule over the complete physical
+segment `[0,R]`, split at every epsilon interface, with sampled-error positions
+scaled inside that segment. Both solvers report full-domain `u_l2`, `w_l2`,
+and `flux_l2` estimates; `*_finite_interval` remains the label for a truncated
+half-line collocation diagnostic. The requested `--diagnostic-endpoint` applies
+only to that half-line window. Finite rows record the affine mapping, `L=null`,
+both potential endpoint traces/defects, native diagnostic coordinates, and
+effective `case_parameters`, including the full layered material table.
+Finite Galerkin has `2*N` unknowns. The records retain catalog initialization:
+`linear_endpoint_lift_zero_w` for finite Galerkin and `wall_exponential` for
+finite collocation. These policies differ, so timings do not imply matched
+initial guesses. The notebook's explicit initial-guess projection is also a
+separate operation. BSK physical benchmarks, parameter sweeps, timing
+breakdowns, and additional boundary-trace studies are outside this registration
+step.
+
 `run_precision` holds both N and the quadrature rule fixed and disables adaptive
 quadrature solves. Its default tolerance is `auto`, using
 `10**(-max(8, precision-12))`; set an explicit tolerance when studying a different
@@ -873,9 +912,10 @@ in both the common and legacy nonlinear benchmark paths; other methods record
 `scipy=null`.
 
 Physical errors use an independent fixed Gauss rule whose order is reported;
-increase `--diagnostic-order` to assess integration error. Galerkin L2/H1
-estimates cover the half-line and assume integrable reference fields. Raw
-collocation can retain a tiny nonzero value at infinity, so its errors are
+increase `--diagnostic-order` to assess integration error. Finite problems use
+their full physical segment. Half-line Galerkin L2/H1 estimates assume
+integrable reference fields. Raw half-line collocation can retain a tiny
+nonzero value at infinity, so its errors are
 explicitly labeled `*_finite_interval` and integrated over `[0,8]` by default;
 `--diagnostic-endpoint` changes the endpoint. Sampled errors and wall/far traces
 are also recorded. A finite quadrature result is not proof of integrability.

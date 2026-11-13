@@ -9,6 +9,7 @@ from contextlib import nullcontext, redirect_stdout
 import csv
 from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from importlib.metadata import PackageNotFoundError, version
 import io
 import json
@@ -24,6 +25,7 @@ import numpy as np
 
 from overscreening_breakdown.arithmetic import MpmathArithmetic, NumpyArithmetic
 from overscreening_breakdown.continuation import ContinuationOptions, ScreenedLinearReference
+from overscreening_breakdown.layered import SUPPORTED_INTERFACE_COUNTS, segment_material
 from overscreening_breakdown.quadrature import QuadratureFactory
 from overscreening_breakdown.solvers import solve
 
@@ -65,11 +67,20 @@ def parser(*, precision_study=False):
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--case", action="append", dest="cases", help=(
         "repeatable: linear:1..8, nonlinear:1..7, rational:constant/scaled/smooth/"
-        "exponential, rational-nonlinear:<coefficient>, transmission"))
+        "exponential, rational-nonlinear:<coefficient>, transmission, "
+        "finite:constant/smooth/layered, finite-nonlinear:constant/smooth/layered"))
     result.add_argument("--solver", choices=("collocation", "galerkin", "legacy_collocation"),
                         default="galerkin")
     result.add_argument("--N", nargs="+", type=_positive_integer, default=[8], dest="resolutions")
     result.add_argument("--L", default="1", help="mapping length; decimal strings retain precision")
+    result.add_argument("--R", default="4", help="physical interval [0,R] for finite cases")
+    result.add_argument("--delta", default="2", help="positive delta for finite cases")
+    result.add_argument("--beta", default="0.125",
+                        help="nonnegative cubic strength for finite-nonlinear cases")
+    result.add_argument("--interfaces", type=int, choices=SUPPORTED_INTERFACE_COUNTS, default=3,
+                        help="interface count for finite layered cases")
+    result.add_argument("--material-style", choices=("constant", "graded"), default="constant",
+                        help="within-layer profile for finite layered cases")
     result.add_argument("--arithmetic", choices=("numpy", "mpmath"),
                         default="mpmath" if precision_study else "numpy")
     result.add_argument("--backend", choices=("auto", "python", "gmpy"), default="auto",
@@ -104,15 +115,52 @@ def parser(*, precision_study=False):
     result.add_argument("--diagnostic-order", type=_positive_integer, default=64,
                         help="independent points per panel for physical error quadrature")
     result.add_argument("--diagnostic-endpoint", default="8",
-                        help="upper physical endpoint for finite-interval collocation errors")
+                        help="upper diagnostic endpoint for half-line collocation; finite cases use [0,R]")
     result.add_argument("--output-dir", type=Path, default=Path("benchmark-results"))
     return result
 
 
-def _case(selector):
+def _finite_parameters(selector, options):
+    family, _, coefficient = selector.partition(":")
+    if family not in ("finite", "finite-nonlinear"):
+        return None
+    if coefficient not in ("constant", "smooth", "layered"):
+        raise ValueError("finite coefficient must be constant, smooth, or layered")
+    if options is None:
+        options = parser().parse_args([])
+    for name in ("R", "delta", "beta"):
+        raw = getattr(options, name)
+        try:
+            value = Decimal(raw)
+        except (InvalidOperation, TypeError, ValueError) as error:
+            raise ValueError("finite {} must be a finite decimal number".format(name)) from error
+        if not value.is_finite() or (value < 0 if name == "beta" else value <= 0):
+            constraint = "nonnegative" if name == "beta" else "strictly positive"
+            raise ValueError("finite {} must be finite and {}".format(name, constraint))
+    layered = coefficient == "layered"
+    material = (segment_material(options.interfaces, R=options.R, kind=options.material_style)
+                if layered else None)
+    return {"R": options.R, "delta": options.delta,
+            "beta": options.beta if family == "finite-nonlinear" else "0",
+            "nonlinear": family == "finite-nonlinear", "coefficient": coefficient,
+            "interfaces": options.interfaces if layered else 0,
+            "material_style": options.material_style if layered else None,
+            "material": material.to_dict() if material is not None else None}
+
+
+def _case(selector, options=None):
     from overscreening_breakdown.manufactured import (
-        linear_case, nonlinear_case, rational_case, transmission_case,
+        finite_segment_case, linear_case, nonlinear_case, rational_case, transmission_case,
     )
+    parameters = _finite_parameters(selector, options)
+    if parameters is not None:
+        from overscreening_breakdown.layered import LayeredMaterial
+        coefficient = (LayeredMaterial(**parameters["material"])
+                       if parameters["material"] is not None else parameters["coefficient"])
+        return finite_segment_case(
+            coefficient, R=parameters["R"], delta=parameters["delta"],
+            nonlinear=parameters["nonlinear"], beta=parameters["beta"],
+        )
     family, separator, argument = selector.partition(":")
     if family == "linear" and separator:
         return linear_case(int(argument))
@@ -182,26 +230,46 @@ def _native_scalar(value):
     return np.asarray(value).item()
 
 
-def _errors(case, arithmetic, evaluator, *, interfaces, L, order, include_flux, endpoint=None):
-    plan = QuadratureFactory(arithmetic, L=L, interfaces=interfaces).plan(order)
+def _diagnostic_domain(arithmetic, domain=None, endpoint=None):
+    left, right = (arithmetic.scalar(value) for value in
+                   ((0, "inf") if domain is None else domain))
+    if arithmetic.isfinite(right) or endpoint is None:
+        return (left, right), False
+    endpoint = arithmetic.scalar(endpoint)
+    if not arithmetic.isfinite(endpoint) or endpoint <= left:
+        raise ValueError("diagnostic endpoint must be finite and positive")
+    return (left, endpoint), True
+
+
+def _sample_points(arithmetic, domain):
+    left, right = domain
+    if right == arithmetic.inf:
+        return tuple(arithmetic.scalar(point) for point in SAMPLE_POINTS)
+    # Preserve the old [0,8] samples when that window is selected, and use
+    # the same fractions on other finite intervals. Retain exact endpoints.
+    return tuple(left if point == "0" else right if point == "8" else
+                 left+(arithmetic.scalar(point)/8)*(right-left) for point in SAMPLE_POINTS)
+
+
+def _errors(case, arithmetic, evaluator, *, interfaces, L, order, include_flux,
+            endpoint=None, domain=None):
+    diagnostic_domain, window = _diagnostic_domain(arithmetic, domain, endpoint)
+    native_interfaces = tuple(arithmetic.scalar(point) for point in interfaces)
+    split = tuple(point for point in native_interfaces
+                  if diagnostic_domain[0] < point < diagnostic_domain[1])
+    plan = QuadratureFactory(arithmetic, L=L, interfaces=split, domain=diagnostic_domain).plan(order)
     scalar = arithmetic.scalar
     sqrt = arithmetic.sqrt
-    if endpoint is None:
-        integrate, suffix = plan.integrate, ""
-    else:
-        endpoint = scalar(endpoint)
-        if not arithmetic.isfinite(endpoint) or endpoint <= 0:
-            raise ValueError("diagnostic endpoint must be finite and positive")
-        integrate = lambda callback: plan.integrate_reference(
-            lambda y: callback(endpoint*(y+1)/2)*endpoint/2)
-        suffix = "_finite_interval"
+    integrate = plan.integrate
+    suffix = "_finite_interval" if window else ""
+    sample_points = _sample_points(arithmetic, diagnostic_domain)
     errors = {}
     fields = ("u", "w", "flux") if include_flux else ("u", "w")
     for field in fields:
         reference = getattr(case, field)
         difference = lambda x: evaluator(field, x)-reference(x, arithmetic)
         errors[field+"_l2"+suffix] = sqrt(integrate(lambda x: difference(x)**2))
-        errors[field+"_sample_max"] = max(abs(difference(scalar(x))) for x in SAMPLE_POINTS)
+        errors[field+"_sample_max"] = max(abs(difference(scalar(x))) for x in sample_points)
         if field != "flux":
             derivative = getattr(case, field+"_dx")
             errors[field+"_h1"+suffix] = sqrt(integrate(
@@ -233,7 +301,15 @@ def _continuation_options(options):
 def _diagnostics(*args, **kwargs):
     started = perf_counter()
     try:
+        arithmetic = args[1]
+        domain, window = _diagnostic_domain(arithmetic, kwargs.get("domain"), kwargs.get("endpoint"))
+        samples = _sample_points(arithmetic, domain)
+        native_interfaces = tuple(arithmetic.scalar(point) for point in kwargs["interfaces"])
+        split = tuple(point for point in native_interfaces if domain[0] < point < domain[1])
         return {"errors": _errors(*args, **kwargs), "diagnostic_success": True,
+                "diagnostic_sample_points": samples, "diagnostic_interfaces": split,
+                "diagnostic_mapping": "affine_interval" if arithmetic.isfinite(domain[1]) else "rational_half_line",
+                "diagnostic_scope": "truncated_half_line" if window else "physical_domain",
                 "diagnostic_seconds": perf_counter()-started}
     except Exception as error:
         return {"errors": None, "diagnostic_success": False,
@@ -256,11 +332,13 @@ def _common(case, options, N, precision, quadrature_order):
     )
     solve_seconds = perf_counter()-started
     arithmetic = solution.arithmetic
+    finite = arithmetic.isfinite(solution.domain[1])
+    endpoint = options.diagnostic_endpoint if options.solver == "collocation" and not finite else None
     diagnostics = _diagnostics(
         case, arithmetic, lambda field, x: getattr(solution, field)(x),
         interfaces=solution.physical.epsilon.interfaces, L=options.L,
         order=options.diagnostic_order, include_flux=True,
-        endpoint=options.diagnostic_endpoint if options.solver == "collocation" else None)
+        endpoint=endpoint, domain=solution.domain)
     plan = getattr(solution, "plan", None)
     data = {"method": solution.method, "unknown_count": solution.unknown_count,
             "converged": bool(solution.converged),
@@ -271,8 +349,15 @@ def _common(case, options, N, precision, quadrature_order):
             "newton": _newton_metadata(solution.newton_result),
             "scipy": getattr(solution, "scipy_result", None),
             "wall_u_defect": solution.u(0)-solution.physical.boundary_conditions[0][0],
-            "far_u_trace": solution.u(arithmetic.inf),
-            "diagnostic_domain": ["0", options.diagnostic_endpoint if options.solver == "collocation" else "inf"],
+            "far_u_trace": None if finite else solution.u(arithmetic.inf),
+            "right_u_trace": solution.u(solution.domain[1]) if finite else None,
+            "right_u_defect": (solution.u(solution.domain[1])-solution.physical.boundary_conditions[1][0]
+                               if finite and solution.physical.boundary_conditions[1][0] is not None else None),
+            "diagnostic_domain": ["0", _decimal(solution.domain[1], arithmetic) if finite else
+                                  options.diagnostic_endpoint if endpoint is not None else "inf"],
+            "mapping_type": "affine_interval" if finite else "rational_half_line",
+            "initialization_policy": (("linear_endpoint_lift_zero_w" if options.solver == "galerkin"
+                                       else "wall_exponential") if finite else None),
             "quadrature_history": getattr(solution, "quadrature_history", ()),
             "physical": {"delta": solution.physical.delta,
                          "domain": solution.physical.domain,
@@ -386,7 +471,7 @@ def _validate(options, argument_parser, *, precision_study):
 def _write(output_dir, metadata, records):
     output_dir.mkdir(parents=True, exist_ok=True)
     report = {"format_version": 1, "metadata": metadata,
-              "diagnostic_note": "Errors use independent fixed quadrature, not rigorous bounds. Collocation L2/H1 errors cover the stated finite interval because a nonzero far trace prevents physical integrability. Galerkin errors cover the half-line and assume integrable reference fields.",
+              "diagnostic_note": "Errors use independent fixed quadrature, not rigorous bounds. Finite problems use their full physical segment. Half-line collocation uses the stated finite window because a nonzero far trace prevents physical integrability. Half-line Galerkin errors assume integrable reference fields. Sampled maxima use only the recorded diagnostic_sample_points.",
               "records": records}
     (output_dir/"results.json").write_text(json.dumps(report, indent=2, allow_nan=False)+"\n")
     csv_records = [{"versions": metadata["versions"], "platform": metadata["platform"],
@@ -409,13 +494,15 @@ def main(argv=None, *, precision_study=False):
     _validate(options, argument_parser, precision_study=precision_study)
     selectors = options.cases or ["rational:constant"]
     try:
-        cases = [(selector, _case(selector)) for selector in selectors]
+        cases = [(selector, _case(selector, options), _finite_parameters(selector, options))
+                 for selector in selectors]
     except (TypeError, ValueError) as error:
         argument_parser.error(str(error))
-    for selector, case in cases:
+    for selector, case, parameters in cases:
         if options.solver not in case.supported_solvers and options.solver != "legacy_collocation":
             argument_parser.error("{} supports {}; select the solver explicitly".format(selector, case.supported_solvers))
-        if options.solver == "legacy_collocation" and selector.startswith(("rational", "transmission")):
+        if options.solver == "legacy_collocation" and (
+                parameters is not None or selector.startswith(("rational", "transmission"))):
             argument_parser.error("{} has no historical legacy operator".format(selector))
     metadata = _metadata()
     metadata["command"] = list(sys.argv if argv is None else argv)
@@ -424,7 +511,7 @@ def main(argv=None, *, precision_study=False):
                            for key, value in vars(options).items()}
     records, failed = [], False
     precisions = options.precisions if precision_study else [options.precision]
-    for selector, case in cases:
+    for selector, case, parameters in cases:
         for N in options.resolutions:
             for precision in precisions:
                 for order in options.quadrature_order or [None]:
@@ -434,7 +521,9 @@ def main(argv=None, *, precision_study=False):
                     row = {"case": selector, "case_identifier": case.identifier,
                            "case_name": case.name, "case_notes": case.notes,
                            "supported_solvers": case.supported_solvers, "solver": options.solver,
-                           "N": N, "L": options.L, "arithmetic": options.arithmetic,
+                           "N": N, "L": None if parameters is not None else options.L,
+                           "case_parameters": parameters,
+                           "arithmetic": options.arithmetic,
                            "requested_precision": precision if options.arithmetic == "mpmath" else None,
                            "mpmath_backend": mp.libmp.BACKEND,
                            "requested_quadrature_order": order,
